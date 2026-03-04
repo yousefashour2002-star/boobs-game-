@@ -265,6 +265,69 @@ export default function App() {
     ws.current?.send(JSON.stringify({ type: 'STOP_TIMER' }));
   };
 
+  const me = gameState.players.find(p => p.id === playerId);
+  const currentRound = gameState.room?.round_number || 1;
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      // If it's public chat and user is not host, force scroll to bottom to prevent "scrolling up"
+      if (activeTab === 'public' && !me?.is_host) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      } else {
+        // Normal auto-scroll for others/private
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    }
+  }, [gameState.messages, activeTab, me?.is_host]);
+
+  // Prevent manual scrolling up for players in public chat
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || activeTab !== 'public' || me?.is_host) return;
+
+    const handleScroll = () => {
+      // If user tries to scroll up more than 50px from bottom, snap back
+      const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+      if (!isAtBottom) {
+        el.scrollTop = el.scrollHeight - el.clientHeight;
+      }
+    };
+
+    el.addEventListener('scroll', handleScroll);
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, [activeTab, me?.is_host, gameState.messages.length]);
+
+  const publicMessages = gameState.messages.filter(m => {
+    // Strictly exclude any message with a receiver_id (private messages)
+    if (m.receiver_id !== null && m.receiver_id !== undefined && m.receiver_id !== '') return false;
+    
+    // Only text, questions, and answers in public chat
+    if (!['text', 'question', 'answer'].includes(m.type)) return false;
+    
+    // Host sees all public messages, players only see current round
+    if (me?.is_host) return true;
+    return m.round_number === currentRound;
+  });
+
+  const privateMessages = gameState.messages.filter(m => 
+    (m.receiver_id === playerId || m.sender_id === playerId) && 
+    (selectedPlayerId ? (m.receiver_id === selectedPlayerId || m.sender_id === selectedPlayerId) : true)
+  );
+  
+  // Players I have messaged
+  const messagedPlayerIds = new Set(
+    gameState.messages
+      .filter(m => m.receiver_id && (m.sender_id === playerId || m.receiver_id === playerId))
+      .map(m => m.sender_id === playerId ? m.receiver_id : m.sender_id)
+  );
+
+  const monitorMessages = gameState.messages.filter(m => 
+    m.receiver_id && 
+    m.receiver_id !== gameState.room?.host_id && 
+    m.sender_id !== gameState.room?.host_id
+  );
+  const playerAnswers = gameState.messages.filter(m => m.type === 'answer');
+
   if (view === 'landing') {
     return (
       <div className="min-h-screen bg-[#0a0a0a] text-white flex items-center justify-center p-4 font-sans">
@@ -329,69 +392,6 @@ export default function App() {
   if (view === 'profile') {
     return <ProfileSetup onComplete={updateProfile} />;
   }
-
-  const me = gameState.players.find(p => p.id === playerId);
-  const currentRound = gameState.room?.round_number || 1;
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      // If it's public chat and user is not host, force scroll to bottom to prevent "scrolling up"
-      if (activeTab === 'public' && !me?.is_host) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      } else {
-        // Normal auto-scroll for others/private
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      }
-    }
-  }, [gameState.messages, activeTab, me?.is_host]);
-
-  // Prevent manual scrolling up for players in public chat
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || activeTab !== 'public' || me?.is_host) return;
-
-    const handleScroll = () => {
-      // If user tries to scroll up more than 50px from bottom, snap back
-      const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
-      if (!isAtBottom) {
-        el.scrollTop = el.scrollHeight - el.clientHeight;
-      }
-    };
-
-    el.addEventListener('scroll', handleScroll);
-    return () => el.removeEventListener('scroll', handleScroll);
-  }, [activeTab, me?.is_host, gameState.messages.length]);
-  
-  const publicMessages = gameState.messages.filter(m => {
-    // Strictly exclude any message with a receiver_id (private messages)
-    if (m.receiver_id !== null && m.receiver_id !== undefined && m.receiver_id !== '') return false;
-    
-    // Only text, questions, and answers in public chat
-    if (!['text', 'question', 'answer'].includes(m.type)) return false;
-    
-    // Host sees all public messages, players only see current round
-    if (me?.is_host) return true;
-    return m.round_number === currentRound;
-  });
-
-  const privateMessages = gameState.messages.filter(m => 
-    (m.receiver_id === playerId || m.sender_id === playerId) && 
-    (selectedPlayerId ? (m.receiver_id === selectedPlayerId || m.sender_id === selectedPlayerId) : true)
-  );
-  
-  // Players I have messaged
-  const messagedPlayerIds = new Set(
-    gameState.messages
-      .filter(m => m.receiver_id && (m.sender_id === playerId || m.receiver_id === playerId))
-      .map(m => m.sender_id === playerId ? m.receiver_id : m.sender_id)
-  );
-
-  const monitorMessages = gameState.messages.filter(m => 
-    m.receiver_id && 
-    m.receiver_id !== gameState.room?.host_id && 
-    m.sender_id !== gameState.room?.host_id
-  );
-  const playerAnswers = gameState.messages.filter(m => m.type === 'answer');
 
   return (
     <div className="h-screen bg-[#0a0a0a] text-white flex overflow-hidden font-sans relative">
@@ -775,7 +775,7 @@ export default function App() {
 
 function ProfileSetup({ onComplete }: { onComplete: (p: any) => void }) {
   const [fakeName, setFakeName] = useState('');
-  const [age, setAge] = useState(25);
+  const [age, setAge] = useState('25');
   const [personality, setPersonality] = useState('Social');
   const [bio, setBio] = useState('');
   const [avatarUrl, setAvatarUrl] = useState(AVATARS[0]);
@@ -833,7 +833,7 @@ function ProfileSetup({ onComplete }: { onComplete: (p: any) => void }) {
                 <input 
                   type="number" 
                   value={age}
-                  onChange={(e) => setAge(parseInt(e.target.value))}
+                  onChange={(e) => setAge(e.target.value)}
                   className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:border-indigo-500"
                 />
               </div>
@@ -895,7 +895,7 @@ function ProfileSetup({ onComplete }: { onComplete: (p: any) => void }) {
             )}
             <div className="pt-8">
               <button 
-                onClick={() => onComplete({ fakeName, age, personality, bio, avatarUrl })}
+                onClick={() => onComplete({ fakeName, age: parseInt(age) || 0, personality, bio, avatarUrl })}
                 disabled={!fakeName || !bio || uploading}
                 className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed py-4 rounded-2xl font-bold text-lg transition-all shadow-lg shadow-indigo-500/20"
               >
