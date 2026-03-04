@@ -8,8 +8,12 @@ import path from "path";
 import multer from "multer";
 import fs from "fs";
 import dotenv from "dotenv";
+import { fileURLToPath } from "url";
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Initialize SQLite database
 const db = new Database("database.db");
@@ -474,14 +478,16 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.join(__dirname, "dist")));
+    app.use(express.static(path.join(process.cwd(), "dist")));
     app.get("*", (req, res) => {
-      res.sendFile(path.join(__dirname, "dist", "index.html"));
+      res.sendFile(path.join(process.cwd(), "dist", "index.html"));
     });
   }
 
-  server.listen(3000, "0.0.0.0", () => {
-    console.log("Server running on http://localhost:3000");
+  const PORT = 3000;
+
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
   });
 }
 
