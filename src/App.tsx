@@ -292,19 +292,27 @@ export default function App() {
 
   const me = gameState.players.find(p => p.id === playerId);
   const currentRound = gameState.room?.round_number || 1;
+  
   const publicMessages = gameState.messages.filter(m => {
-    if (m.receiver_id || m.type !== 'text') return false;
-    // Players only see current round, host sees all
+    if (m.receiver_id || !['text', 'question', 'answer'].includes(m.type)) return false;
     if (me?.is_host) return true;
     return m.round_number === currentRound;
   });
+
   const privateMessages = gameState.messages.filter(m => 
     (m.receiver_id === playerId || m.sender_id === playerId) && 
     (selectedPlayerId ? (m.receiver_id === selectedPlayerId || m.sender_id === selectedPlayerId) : true)
   );
   
-  // Host sees all DMs
+  // Players I have messaged
+  const messagedPlayerIds = new Set(
+    gameState.messages
+      .filter(m => m.receiver_id && (m.sender_id === playerId || m.receiver_id === playerId))
+      .map(m => m.sender_id === playerId ? m.receiver_id : m.sender_id)
+  );
+
   const monitorMessages = gameState.messages.filter(m => m.receiver_id && m.isMonitor);
+  const playerAnswers = gameState.messages.filter(m => m.type === 'answer');
 
   return (
     <div className="h-screen bg-[#0a0a0a] text-white flex overflow-hidden font-sans">
@@ -372,8 +380,10 @@ export default function App() {
 
           {activeTab === 'private' && (
             <div className="space-y-2">
-              <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest px-2">Conversations</p>
-              {gameState.players.filter(p => p.id !== playerId).map(p => (
+              <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest px-2">Recent Chats</p>
+              {gameState.players
+                .filter(p => p.id !== playerId && (messagedPlayerIds.has(p.id) || selectedPlayerId === p.id))
+                .map(p => (
                 <button
                   key={p.id}
                   onClick={() => setSelectedPlayerId(p.id)}
@@ -382,13 +392,16 @@ export default function App() {
                     selectedPlayerId === p.id ? "bg-zinc-800" : "hover:bg-zinc-800/50"
                   )}
                 >
-                  <img src={p.avatar_url || ''} className="w-8 h-8 rounded-full mr-3 border border-zinc-700" referrerPolicy="no-referrer" />
-                  <div className="text-left">
-                    <p className="text-sm font-semibold">{p.fake_name}</p>
+                  <img src={p.avatar_url || ''} className="w-8 h-8 rounded-full mr-3 border border-zinc-700 object-cover" referrerPolicy="no-referrer" />
+                  <div className="text-left overflow-hidden">
+                    <p className="text-sm font-semibold truncate">{p.fake_name}</p>
                     {p.is_blocked ? <span className="text-[10px] text-red-500 font-bold uppercase">Blocked</span> : <span className="text-[10px] text-green-500 font-bold uppercase">Active</span>}
                   </div>
                 </button>
               ))}
+              {messagedPlayerIds.size === 0 && !selectedPlayerId && (
+                <p className="text-[10px] text-zinc-600 italic px-2">No active chats. Go to Players to start one.</p>
+              )}
             </div>
           )}
         </div>
@@ -472,9 +485,15 @@ export default function App() {
             <HostPanel 
               players={gameState.players}
               messages={monitorMessages}
+              answers={playerAnswers}
               onToggleBlock={toggleBlock}
               onAwardPoints={awardPoints}
-              onSendQuestion={sendQuestion}
+              onSendQuestion={(content) => {
+                // Send to all players
+                gameState.players.filter(p => !p.is_host).forEach(p => {
+                  sendQuestion(p.id, content);
+                });
+              }}
               onStartVoting={startVoting}
               onEndVoting={endVoting}
               onSetTimer={setTimer}
@@ -495,6 +514,16 @@ export default function App() {
                     onAvatarClick={() => {
                       const sender = gameState.players.find(p => p.id === m.sender_id);
                       if (sender) setShowProfileModal(sender);
+                    }}
+                    onAnswer={(answer) => {
+                      ws.current?.send(JSON.stringify({
+                        type: 'SEND_MESSAGE',
+                        payload: {
+                          content: answer,
+                          receiverId: gameState.room?.host_id,
+                          msgType: 'answer'
+                        }
+                      }));
                     }}
                   />
                 ))}
@@ -736,26 +765,74 @@ interface MessageBubbleProps {
   isMe: boolean;
   sender?: Player;
   onAvatarClick?: () => void;
+  onAnswer?: (answer: string) => void;
 }
 
-function MessageBubble({ message, isMe, sender, onAvatarClick }: MessageBubbleProps) {
+function MessageBubble({ message, isMe, sender, onAvatarClick, onAnswer }: MessageBubbleProps) {
+  const [answer, setAnswer] = useState('');
+  const [submitted, setSubmitted] = useState(false);
+
+  if (message.type === 'question' && !isMe) {
+    return (
+      <div className="flex flex-col items-start w-full max-w-md">
+        <div className="bg-amber-600/10 border border-amber-500/30 rounded-2xl p-6 w-full space-y-4 shadow-lg">
+          <div className="flex items-center space-x-2 text-amber-500">
+            <Shield size={16} />
+            <span className="text-xs font-bold uppercase tracking-widest">Host Question</span>
+          </div>
+          <p className="text-lg font-medium text-zinc-100">{message.content}</p>
+          {!submitted ? (
+            <div className="space-y-3">
+              <input 
+                type="text" 
+                value={answer}
+                onChange={(e) => setAnswer(e.target.value)}
+                placeholder="Type your answer..."
+                className="w-full bg-black/40 border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:border-amber-500 transition-all"
+              />
+              <button 
+                onClick={() => {
+                  if (answer.trim() && onAnswer) {
+                    onAnswer(answer);
+                    setSubmitted(true);
+                  }
+                }}
+                className="w-full bg-amber-600 hover:bg-amber-500 py-2 rounded-xl font-bold transition-all"
+              >
+                Submit Answer
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center text-green-500 text-sm font-bold">
+              <CheckCircle2 size={16} className="mr-2" />
+              Answer Sent to Host
+            </div>
+          )}
+        </div>
+        <span className="text-[10px] text-zinc-600 mt-2 px-2">
+          {new Date(message.created_at).toLocaleTimeString()}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className={cn("flex flex-col", isMe ? "items-end" : "items-start")}>
       <div className={cn("flex items-end space-x-2", isMe && "flex-row-reverse space-x-reverse")}>
         <button onClick={onAvatarClick} className="flex-shrink-0">
-          <img src={sender?.avatar_url || ''} className="w-8 h-8 rounded-full mb-1 hover:ring-2 hover:ring-indigo-500 transition-all" referrerPolicy="no-referrer" />
+          <img src={sender?.avatar_url || ''} className="w-10 h-10 rounded-full mb-1 hover:ring-2 hover:ring-indigo-500 transition-all object-cover border border-zinc-800" referrerPolicy="no-referrer" />
         </button>
         <div className={cn(
           "max-w-md px-4 py-3 rounded-2xl text-sm shadow-sm",
           isMe ? "bg-indigo-600 text-white rounded-br-none" : "bg-zinc-800 text-zinc-100 rounded-bl-none",
-          message.type === 'question' && "bg-amber-600/20 border border-amber-500/30 text-amber-200"
+          message.type === 'answer' && "bg-emerald-600/20 border border-emerald-500/30 text-emerald-200"
         )}>
-          {message.type === 'question' && <p className="text-[10px] font-bold uppercase mb-1 opacity-60 flex items-center"><Lock size={10} className="mr-1" /> Host Question</p>}
+          {!isMe && <p className="text-[10px] font-bold text-indigo-400 mb-1">{sender?.fake_name}</p>}
           {message.content}
         </div>
       </div>
       <span className="text-[10px] text-zinc-600 mt-1 px-2">
-        {isMe ? 'You' : sender?.fake_name} • {new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        {new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
       </span>
     </div>
   );
@@ -824,15 +901,14 @@ function PlayerCard({ player, isMe, onView, onMessage, onVote, canVote }: Player
 }
 
 function HostPanel({ 
-  players, messages, onToggleBlock, onAwardPoints, onSendQuestion, onStartVoting, onEndVoting, onSetTimer, onStopTimer, roomStatus, timerLeft, timerActive
+  players, messages, answers, onToggleBlock, onAwardPoints, onSendQuestion, onStartVoting, onEndVoting, onSetTimer, onStopTimer, roomStatus, timerLeft, timerActive
 }: { 
-  players: Player[], messages: Message[], onToggleBlock: (id: string, s: number) => void, 
-  onAwardPoints: (id: string, p: number) => void, onSendQuestion: (id: string, c: string) => void,
+  players: Player[], messages: Message[], answers: Message[], onToggleBlock: (id: string, s: number) => void, 
+  onAwardPoints: (id: string, p: number) => void, onSendQuestion: (c: string) => void,
   onStartVoting: () => void, onEndVoting: () => void, onSetTimer: (s: number) => void, onStopTimer: () => void,
   roomStatus: string, timerLeft: number, timerActive: boolean
 }) {
   const [questionInput, setQuestionInput] = useState('');
-  const [selectedForQuestion, setSelectedForQuestion] = useState<string[]>([]);
   const [timerInput, setTimerInput] = useState('300');
 
   return (
@@ -848,14 +924,14 @@ function HostPanel({
               {roomStatus === 'playing' ? (
                 <button 
                   onClick={onStartVoting}
-                  className="flex-1 bg-red-600 hover:bg-red-500 py-3 rounded-xl font-bold transition-all"
+                  className="flex-1 bg-red-600 hover:bg-red-500 py-3 rounded-xl font-bold transition-all shadow-lg shadow-red-500/20"
                 >
                   Start Voting Phase
                 </button>
               ) : (
                 <button 
                   onClick={onEndVoting}
-                  className="flex-1 bg-green-600 hover:bg-green-500 py-3 rounded-xl font-bold transition-all"
+                  className="flex-1 bg-green-600 hover:bg-green-500 py-3 rounded-xl font-bold transition-all shadow-lg shadow-green-500/20"
                 >
                   End Voting & Block
                 </button>
@@ -869,20 +945,20 @@ function HostPanel({
                   type="number" 
                   value={timerInput}
                   onChange={(e) => setTimerInput(e.target.value)}
-                  className="w-24 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-center"
+                  className="w-24 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-center focus:border-indigo-500 outline-none"
                   placeholder="Sec"
                 />
                 {!timerActive ? (
                   <button 
                     onClick={() => onSetTimer(parseInt(timerInput))}
-                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 py-2 rounded-xl font-bold text-sm"
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 py-2 rounded-xl font-bold text-sm transition-all"
                   >
                     Start Timer
                   </button>
                 ) : (
                   <button 
                     onClick={onStopTimer}
-                    className="flex-1 bg-zinc-800 hover:bg-zinc-700 py-2 rounded-xl font-bold text-sm text-red-400"
+                    className="flex-1 bg-zinc-800 hover:bg-zinc-700 py-2 rounded-xl font-bold text-sm text-red-400 transition-all"
                   >
                     Stop ({Math.floor(timerLeft / 60)}:{(timerLeft % 60).toString().padStart(2, '0')})
                   </button>
@@ -894,39 +970,25 @@ function HostPanel({
 
         <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl space-y-4">
           <h4 className="text-sm font-bold text-zinc-500 uppercase tracking-widest flex items-center">
-            <MessageCircle size={16} className="mr-2" /> Send Private Question
+            <MessageCircle size={16} className="mr-2" /> Send Question to All
           </h4>
           <div className="space-y-3">
-            <input 
-              type="text" 
+            <textarea 
               value={questionInput}
               onChange={(e) => setQuestionInput(e.target.value)}
-              className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-2 focus:outline-none focus:border-amber-500"
-              placeholder="Type a question for players..."
+              className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 h-24 focus:outline-none focus:border-amber-500 transition-all resize-none"
+              placeholder="Ask all players a question..."
             />
-            <div className="flex gap-2 overflow-x-auto pb-2">
-              {players.filter(p => !p.is_host).map(p => (
-                <button 
-                  key={p.id}
-                  onClick={() => setSelectedForQuestion(prev => prev.includes(p.id) ? prev.filter(id => id !== p.id) : [...prev, p.id])}
-                  className={cn(
-                    "px-3 py-1 rounded-full text-xs font-bold transition-all whitespace-nowrap",
-                    selectedForQuestion.includes(p.id) ? "bg-amber-600 text-white" : "bg-zinc-800 text-zinc-500"
-                  )}
-                >
-                  {p.fake_name}
-                </button>
-              ))}
-            </div>
             <button 
               onClick={() => {
-                selectedForQuestion.forEach(id => onSendQuestion(id, questionInput));
-                setQuestionInput('');
-                setSelectedForQuestion([]);
+                if (questionInput.trim()) {
+                  onSendQuestion(questionInput);
+                  setQuestionInput('');
+                }
               }}
-              className="w-full bg-amber-600 hover:bg-amber-500 py-2 rounded-xl font-bold transition-all"
+              className="w-full bg-amber-600 hover:bg-amber-500 py-3 rounded-xl font-bold transition-all shadow-lg shadow-amber-500/20"
             >
-              Send to Selected
+              Broadcast Question
             </button>
           </div>
         </div>
@@ -952,7 +1014,7 @@ function HostPanel({
               {players.filter(p => !p.is_host).map(p => (
                 <tr key={p.id} className="hover:bg-zinc-800/20 transition-all">
                   <td className="px-6 py-4 flex items-center space-x-3">
-                    <img src={p.avatar_url || ''} className="w-8 h-8 rounded-full" referrerPolicy="no-referrer" />
+                    <img src={p.avatar_url || ''} className="w-10 h-10 rounded-full object-cover border border-zinc-700" referrerPolicy="no-referrer" />
                     <span className="font-bold">{p.fake_name}</span>
                   </td>
                   <td className="px-6 py-4 text-zinc-400 font-mono text-xs">{p.real_name || 'Unknown'}</td>
@@ -974,7 +1036,7 @@ function HostPanel({
                       </button>
                       <button 
                         onClick={() => onAwardPoints(p.id, 10)}
-                        className="p-2 bg-indigo-600/20 text-indigo-500 rounded-lg hover:bg-indigo-600/30"
+                        className="p-2 bg-indigo-600/20 text-indigo-500 rounded-lg hover:bg-indigo-600/30 transition-all"
                       >
                         +10
                       </button>
@@ -988,29 +1050,57 @@ function HostPanel({
       </div>
 
       {/* DM Monitor */}
-      <div className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden">
-        <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
-          <h4 className="text-sm font-bold text-zinc-500 uppercase tracking-widest flex items-center">
-            <Eye size={16} className="mr-2" /> Private DM Monitor (Host Only)
-          </h4>
-          <span className="text-[10px] bg-amber-500/10 text-amber-500 px-2 py-1 rounded font-bold uppercase">Live Feed</span>
-        </div>
-        <div className="p-6 h-64 overflow-y-auto space-y-3 bg-black/20">
-          {messages.length === 0 ? (
-            <p className="text-center text-zinc-600 text-sm italic py-12">No private messages intercepted yet...</p>
-          ) : (
-            messages.map(m => (
-              <div key={m.id} className="text-xs bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
-                <div className="flex justify-between mb-1">
-                  <span className="font-bold text-indigo-400">
-                    {players.find(p => p.id === m.sender_id)?.fake_name} → {players.find(p => p.id === m.receiver_id)?.fake_name}
-                  </span>
-                  <span className="text-zinc-600">{new Date(m.created_at).toLocaleTimeString()}</span>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden flex flex-col h-[400px]">
+          <div className="p-6 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/50">
+            <h4 className="text-sm font-bold text-zinc-500 uppercase tracking-widest flex items-center">
+              <Eye size={16} className="mr-2" /> Live DM Monitor
+            </h4>
+            <span className="text-[10px] bg-amber-500/10 text-amber-500 px-2 py-1 rounded font-bold uppercase">Intercepted</span>
+          </div>
+          <div className="flex-1 overflow-y-auto p-6 space-y-3 bg-black/20">
+            {messages.length === 0 ? (
+              <p className="text-center text-zinc-600 text-sm italic py-12">No private messages intercepted yet...</p>
+            ) : (
+              messages.map(m => (
+                <div key={m.id} className="text-xs bg-zinc-800/50 p-3 rounded-xl border border-zinc-800">
+                  <div className="flex justify-between mb-1">
+                    <span className="font-bold text-indigo-400">
+                      {players.find(p => p.id === m.sender_id)?.fake_name} → {players.find(p => p.id === m.receiver_id)?.fake_name}
+                    </span>
+                    <span className="text-zinc-600">{new Date(m.created_at).toLocaleTimeString()}</span>
+                  </div>
+                  <p className="text-zinc-300">{m.content}</p>
                 </div>
-                <p className="text-zinc-300">{m.content}</p>
-              </div>
-            ))
-          )}
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden flex flex-col h-[400px]">
+          <div className="p-6 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/50">
+            <h4 className="text-sm font-bold text-zinc-500 uppercase tracking-widest flex items-center">
+              <CheckCircle2 size={16} className="mr-2" /> Player Answers
+            </h4>
+            <span className="text-[10px] bg-emerald-500/10 text-emerald-500 px-2 py-1 rounded font-bold uppercase">Feedback</span>
+          </div>
+          <div className="flex-1 overflow-y-auto p-6 space-y-3 bg-black/20">
+            {answers.length === 0 ? (
+              <p className="text-center text-zinc-600 text-sm italic py-12">No answers received yet...</p>
+            ) : (
+              answers.map(m => (
+                <div key={m.id} className="text-xs bg-emerald-600/10 p-3 rounded-xl border border-emerald-500/20">
+                  <div className="flex justify-between mb-1">
+                    <span className="font-bold text-emerald-400">
+                      {players.find(p => p.id === m.sender_id)?.fake_name}
+                    </span>
+                    <span className="text-zinc-600">{new Date(m.created_at).toLocaleTimeString()}</span>
+                  </div>
+                  <p className="text-zinc-300">{m.content}</p>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
     </div>
