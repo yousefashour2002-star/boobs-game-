@@ -117,7 +117,7 @@ export default function App() {
         setGameState(prev => ({ ...prev, room: prev.room ? { ...prev.room, status: 'voting' } : null }));
         break;
       case 'VOTING_ENDED':
-        setGameState(prev => ({ ...prev, room: prev.room ? { ...prev.room, status: 'playing' } : null }));
+        setGameState(prev => ({ ...prev, room: payload.room }));
         break;
       case 'PLAYER_BLOCKED':
       case 'BLOCK_STATUS_CHANGED':
@@ -125,6 +125,15 @@ export default function App() {
           ...prev,
           players: prev.players.map(p => p.id === payload.playerId ? { ...p, is_blocked: payload.isBlocked !== undefined ? (payload.isBlocked ? 1 : 0) : 1 } : p)
         }));
+        break;
+      case 'TIMER_TICK':
+        setGameState(prev => ({ ...prev, room: prev.room ? { ...prev.room, timer_left: payload.seconds, timer_active: 1 } : null }));
+        break;
+      case 'TIMER_UPDATED':
+        setGameState(prev => ({ ...prev, room: prev.room ? { ...prev.room, timer_left: payload.seconds ?? prev.room.timer_left, timer_active: payload.active } : null }));
+        break;
+      case 'TIMER_FINISHED':
+        setGameState(prev => ({ ...prev, room: prev.room ? { ...prev.room, timer_left: 0, timer_active: 0 } : null }));
         break;
       case 'POINTS_UPDATED':
         // Refresh state or just show notification
@@ -208,6 +217,14 @@ export default function App() {
     }));
   };
 
+  const setTimer = (seconds: number) => {
+    ws.current?.send(JSON.stringify({ type: 'SET_TIMER', payload: { seconds } }));
+  };
+
+  const stopTimer = () => {
+    ws.current?.send(JSON.stringify({ type: 'STOP_TIMER' }));
+  };
+
   if (view === 'landing') {
     return (
       <div className="min-h-screen bg-[#0a0a0a] text-white flex items-center justify-center p-4 font-sans">
@@ -274,7 +291,13 @@ export default function App() {
   }
 
   const me = gameState.players.find(p => p.id === playerId);
-  const publicMessages = gameState.messages.filter(m => !m.receiver_id && m.type === 'text');
+  const currentRound = gameState.room?.round_number || 1;
+  const publicMessages = gameState.messages.filter(m => {
+    if (m.receiver_id || m.type !== 'text') return false;
+    // Players only see current round, host sees all
+    if (me?.is_host) return true;
+    return m.round_number === currentRound;
+  });
   const privateMessages = gameState.messages.filter(m => 
     (m.receiver_id === playerId || m.sender_id === playerId) && 
     (selectedPlayerId ? (m.receiver_id === selectedPlayerId || m.sender_id === selectedPlayerId) : true)
@@ -405,6 +428,14 @@ export default function App() {
           </div>
 
           <div className="flex items-center space-x-4">
+            {gameState.room?.timer_active === 1 && (
+              <div className="flex items-center bg-zinc-800 px-3 py-1 rounded-full border border-zinc-700">
+                <Settings size={14} className="mr-2 text-zinc-500 animate-spin" />
+                <span className="text-xs font-mono font-bold">
+                  {Math.floor(gameState.room.timer_left / 60)}:{(gameState.room.timer_left % 60).toString().padStart(2, '0')}
+                </span>
+              </div>
+            )}
             {gameState.room?.status === 'voting' && (
               <div className="flex items-center bg-red-500/10 text-red-500 px-3 py-1 rounded-full border border-red-500/20 animate-pulse">
                 <AlertCircle size={16} className="mr-2" />
@@ -446,7 +477,11 @@ export default function App() {
               onSendQuestion={sendQuestion}
               onStartVoting={startVoting}
               onEndVoting={endVoting}
+              onSetTimer={setTimer}
+              onStopTimer={stopTimer}
               roomStatus={gameState.room?.status || 'waiting'}
+              timerLeft={gameState.room?.timer_left || 0}
+              timerActive={gameState.room?.timer_active === 1}
             />
           ) : (
             <>
@@ -457,6 +492,10 @@ export default function App() {
                     message={m} 
                     isMe={m.sender_id === playerId}
                     sender={gameState.players.find(p => p.id === m.sender_id)}
+                    onAvatarClick={() => {
+                      const sender = gameState.players.find(p => p.id === m.sender_id);
+                      if (sender) setShowProfileModal(sender);
+                    }}
                   />
                 ))}
               </div>
@@ -561,6 +600,29 @@ function ProfileSetup({ onComplete }: { onComplete: (p: any) => void }) {
   const [personality, setPersonality] = useState('Social');
   const [bio, setBio] = useState('');
   const [avatarUrl, setAvatarUrl] = useState(AVATARS[0]);
+  const [uploading, setUploading] = useState(false);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    const formData = new FormData();
+    formData.append('avatar', file);
+
+    try {
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      setAvatarUrl(data.url);
+    } catch (err) {
+      alert('Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white flex items-center justify-center p-4">
@@ -637,11 +699,25 @@ function ProfileSetup({ onComplete }: { onComplete: (p: any) => void }) {
                   <img src={url} className="w-full aspect-square rounded-xl" referrerPolicy="no-referrer" />
                 </button>
               ))}
+              <label className={cn(
+                "p-2 rounded-2xl border-2 border-dashed border-zinc-700 hover:border-indigo-500 transition-all cursor-pointer flex flex-col items-center justify-center text-zinc-500 hover:text-indigo-400",
+                uploading && "opacity-50 cursor-wait"
+              )}>
+                <Plus size={24} />
+                <span className="text-[10px] font-bold uppercase mt-1">Upload</span>
+                <input type="file" accept="image/*" className="hidden" onChange={handleFileUpload} disabled={uploading} />
+              </label>
             </div>
+            {avatarUrl && !AVATARS.includes(avatarUrl) && (
+              <div className="flex items-center space-x-4 p-4 bg-zinc-800 rounded-2xl">
+                <img src={avatarUrl} className="w-12 h-12 rounded-xl object-cover" referrerPolicy="no-referrer" />
+                <span className="text-xs text-zinc-400">Custom Avatar Selected</span>
+              </div>
+            )}
             <div className="pt-8">
               <button 
                 onClick={() => onComplete({ fakeName, age, personality, bio, avatarUrl })}
-                disabled={!fakeName || !bio}
+                disabled={!fakeName || !bio || uploading}
                 className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed py-4 rounded-2xl font-bold text-lg transition-all shadow-lg shadow-indigo-500/20"
               >
                 Enter The Circle
@@ -659,13 +735,16 @@ interface MessageBubbleProps {
   message: Message;
   isMe: boolean;
   sender?: Player;
+  onAvatarClick?: () => void;
 }
 
-function MessageBubble({ message, isMe, sender }: MessageBubbleProps) {
+function MessageBubble({ message, isMe, sender, onAvatarClick }: MessageBubbleProps) {
   return (
     <div className={cn("flex flex-col", isMe ? "items-end" : "items-start")}>
       <div className={cn("flex items-end space-x-2", isMe && "flex-row-reverse space-x-reverse")}>
-        {!isMe && <img src={sender?.avatar_url || ''} className="w-8 h-8 rounded-full mb-1" referrerPolicy="no-referrer" />}
+        <button onClick={onAvatarClick} className="flex-shrink-0">
+          <img src={sender?.avatar_url || ''} className="w-8 h-8 rounded-full mb-1 hover:ring-2 hover:ring-indigo-500 transition-all" referrerPolicy="no-referrer" />
+        </button>
         <div className={cn(
           "max-w-md px-4 py-3 rounded-2xl text-sm shadow-sm",
           isMe ? "bg-indigo-600 text-white rounded-br-none" : "bg-zinc-800 text-zinc-100 rounded-bl-none",
@@ -745,14 +824,16 @@ function PlayerCard({ player, isMe, onView, onMessage, onVote, canVote }: Player
 }
 
 function HostPanel({ 
-  players, messages, onToggleBlock, onAwardPoints, onSendQuestion, onStartVoting, onEndVoting, roomStatus 
+  players, messages, onToggleBlock, onAwardPoints, onSendQuestion, onStartVoting, onEndVoting, onSetTimer, onStopTimer, roomStatus, timerLeft, timerActive
 }: { 
   players: Player[], messages: Message[], onToggleBlock: (id: string, s: number) => void, 
   onAwardPoints: (id: string, p: number) => void, onSendQuestion: (id: string, c: string) => void,
-  onStartVoting: () => void, onEndVoting: () => void, roomStatus: string
+  onStartVoting: () => void, onEndVoting: () => void, onSetTimer: (s: number) => void, onStopTimer: () => void,
+  roomStatus: string, timerLeft: number, timerActive: boolean
 }) {
   const [questionInput, setQuestionInput] = useState('');
   const [selectedForQuestion, setSelectedForQuestion] = useState<string[]>([]);
+  const [timerInput, setTimerInput] = useState('300');
 
   return (
     <div className="flex-1 overflow-y-auto p-8 space-y-8">
@@ -762,22 +843,52 @@ function HostPanel({
           <h4 className="text-sm font-bold text-zinc-500 uppercase tracking-widest flex items-center">
             <Settings size={16} className="mr-2" /> Game Flow Control
           </h4>
-          <div className="flex gap-4">
-            {roomStatus === 'playing' ? (
-              <button 
-                onClick={onStartVoting}
-                className="flex-1 bg-red-600 hover:bg-red-500 py-3 rounded-xl font-bold transition-all"
-              >
-                Start Voting Phase
-              </button>
-            ) : (
-              <button 
-                onClick={onEndVoting}
-                className="flex-1 bg-green-600 hover:bg-green-500 py-3 rounded-xl font-bold transition-all"
-              >
-                End Voting & Block
-              </button>
-            )}
+          <div className="space-y-4">
+            <div className="flex gap-4">
+              {roomStatus === 'playing' ? (
+                <button 
+                  onClick={onStartVoting}
+                  className="flex-1 bg-red-600 hover:bg-red-500 py-3 rounded-xl font-bold transition-all"
+                >
+                  Start Voting Phase
+                </button>
+              ) : (
+                <button 
+                  onClick={onEndVoting}
+                  className="flex-1 bg-green-600 hover:bg-green-500 py-3 rounded-xl font-bold transition-all"
+                >
+                  End Voting & Block
+                </button>
+              )}
+            </div>
+            
+            <div className="pt-4 border-t border-zinc-800 space-y-3">
+              <h5 className="text-xs font-bold text-zinc-600 uppercase">Timer Management</h5>
+              <div className="flex gap-2">
+                <input 
+                  type="number" 
+                  value={timerInput}
+                  onChange={(e) => setTimerInput(e.target.value)}
+                  className="w-24 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-center"
+                  placeholder="Sec"
+                />
+                {!timerActive ? (
+                  <button 
+                    onClick={() => onSetTimer(parseInt(timerInput))}
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 py-2 rounded-xl font-bold text-sm"
+                  >
+                    Start Timer
+                  </button>
+                ) : (
+                  <button 
+                    onClick={onStopTimer}
+                    className="flex-1 bg-zinc-800 hover:bg-zinc-700 py-2 rounded-xl font-bold text-sm text-red-400"
+                  >
+                    Stop ({Math.floor(timerLeft / 60)}:{(timerLeft % 60).toString().padStart(2, '0')})
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
 

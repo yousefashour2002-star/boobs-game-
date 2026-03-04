@@ -20,6 +20,7 @@ export interface Message {
   content: string;
   type: 'text' | 'question' | 'answer';
   created_at: string;
+  round_number: number;
   isMonitor?: boolean;
 }
 
@@ -29,6 +30,9 @@ export interface Room {
   status: 'waiting' | 'playing' | 'voting';
   chat_time: number;
   voting_time: number;
+  round_number: number;
+  timer_left: number;
+  timer_active: number;
 }
 
 export type GameState = {

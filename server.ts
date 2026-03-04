@@ -5,8 +5,28 @@ import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
+import multer from "multer";
+import fs from "fs";
 
 const db = new Database("game.db");
+
+// Ensure uploads directory exists
+const uploadDir = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  },
+});
+
+const upload = multer({ storage });
 
 // Initialize Database
 db.exec(`
@@ -16,6 +36,9 @@ db.exec(`
     status TEXT DEFAULT 'waiting',
     chat_time INTEGER DEFAULT 300,
     voting_time INTEGER DEFAULT 60,
+    round_number INTEGER DEFAULT 1,
+    timer_left INTEGER DEFAULT 0,
+    timer_active INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -41,6 +64,7 @@ db.exec(`
     receiver_id TEXT,
     content TEXT,
     type TEXT DEFAULT 'text',
+    round_number INTEGER DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -60,8 +84,13 @@ async function startServer() {
   const wss = new WebSocketServer({ server });
 
   app.use(express.json());
+  app.use("/uploads", express.static(uploadDir));
 
   // API Routes
+  app.post("/api/upload", upload.single("avatar"), (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    res.json({ url: `/uploads/${req.file.filename}` });
+  });
   app.post("/api/rooms", (req, res) => {
     const id = Math.random().toString(36).substring(2, 8).toUpperCase();
     const hostId = uuidv4();
@@ -127,9 +156,10 @@ async function startServer() {
           const player = db.prepare("SELECT is_blocked FROM players WHERE id = ?").get(clientInfo.playerId) as any;
           if (player?.is_blocked && msgType !== 'answer') return;
 
+          const room = db.prepare("SELECT round_number, host_id FROM rooms WHERE id = ?").get(clientInfo.roomId) as any;
           const msgId = uuidv4();
-          db.prepare("INSERT INTO messages (id, room_id, sender_id, receiver_id, content, type) VALUES (?, ?, ?, ?, ?, ?)")
-            .run(msgId, clientInfo.roomId, clientInfo.playerId, receiverId || null, content, msgType || 'text');
+          db.prepare("INSERT INTO messages (id, room_id, sender_id, receiver_id, content, type, round_number) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .run(msgId, clientInfo.roomId, clientInfo.playerId, receiverId || null, content, msgType || 'text', room.round_number);
 
           const msgData = {
             id: msgId,
@@ -137,6 +167,7 @@ async function startServer() {
             receiverId: receiverId || null,
             content,
             type: msgType || 'text',
+            round_number: room.round_number,
             createdAt: new Date().toISOString()
           };
 
@@ -149,7 +180,6 @@ async function startServer() {
             ws.send(JSON.stringify({ type: "NEW_MESSAGE", payload: msgData }));
 
             // Host can see all DMs
-            const room = db.prepare("SELECT host_id FROM rooms WHERE id = ?").get(clientInfo.roomId) as any;
             if (room && room.host_id !== clientInfo.playerId && room.host_id !== receiverId) {
               const host = clients.get(room.host_id);
               if (host) host.ws.send(JSON.stringify({ type: "NEW_MESSAGE", payload: { ...msgData, isMonitor: true } }));
@@ -185,9 +215,26 @@ async function startServer() {
             broadcastToRoom(clientInfo.roomId, { type: "PLAYER_BLOCKED", payload: { playerId: mostVoted } });
           }
 
-          db.prepare("UPDATE rooms SET status = 'playing' WHERE id = ?").run(clientInfo.roomId);
+          db.prepare("UPDATE rooms SET status = 'playing', round_number = round_number + 1 WHERE id = ?").run(clientInfo.roomId);
           db.prepare("DELETE FROM votes WHERE room_id = ?").run(clientInfo.roomId);
-          broadcastToRoom(clientInfo.roomId, { type: "VOTING_ENDED" });
+          
+          const updatedRoom = db.prepare("SELECT * FROM rooms WHERE id = ?").get(clientInfo.roomId);
+          broadcastToRoom(clientInfo.roomId, { type: "VOTING_ENDED", payload: { room: updatedRoom } });
+          break;
+        }
+
+        case "SET_TIMER": {
+          if (!clientInfo) return;
+          const { seconds } = payload;
+          db.prepare("UPDATE rooms SET timer_left = ?, timer_active = 1 WHERE id = ?").run(seconds, clientInfo.roomId);
+          broadcastToRoom(clientInfo.roomId, { type: "TIMER_UPDATED", payload: { seconds, active: 1 } });
+          break;
+        }
+
+        case "STOP_TIMER": {
+          if (!clientInfo) return;
+          db.prepare("UPDATE rooms SET timer_active = 0 WHERE id = ?").run(clientInfo.roomId);
+          broadcastToRoom(clientInfo.roomId, { type: "TIMER_UPDATED", payload: { active: 0 } });
           break;
         }
 
@@ -224,6 +271,21 @@ async function startServer() {
       }
     });
   }
+
+  // Timer interval
+  setInterval(() => {
+    const activeRooms = db.prepare("SELECT id, timer_left FROM rooms WHERE timer_active = 1 AND timer_left > 0").all() as any[];
+    activeRooms.forEach(room => {
+      const newTime = room.timer_left - 1;
+      if (newTime <= 0) {
+        db.prepare("UPDATE rooms SET timer_left = 0, timer_active = 0 WHERE id = ?").run(room.id);
+        broadcastToRoom(room.id, { type: "TIMER_FINISHED" });
+      } else {
+        db.prepare("UPDATE rooms SET timer_left = ? WHERE id = ?").run(newTime, room.id);
+        broadcastToRoom(room.id, { type: "TIMER_TICK", payload: { seconds: newTime } });
+      }
+    });
+  }, 1000);
 
   function sendRoomState(roomId: string, ws: WebSocket) {
     const players = db.prepare("SELECT id, fake_name, age, personality, bio, avatar_url, is_blocked, is_host, points FROM players WHERE room_id = ?").all(roomId);
