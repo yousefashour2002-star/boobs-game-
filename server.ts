@@ -331,6 +331,9 @@ async function startServer() {
 
         case "CAST_VOTE": {
           if (!clientInfo) return;
+          const player = dbOps.players.findOne({ id: clientInfo.playerId });
+          if (!player || player.is_host !== 1) return; // Only host can vote
+
           const { targetId } = payload;
           const voteId = uuidv4();
           dbOps.votes.create({ id: voteId, room_id: clientInfo.roomId, voter_id: clientInfo.playerId, target_id: targetId });
@@ -407,7 +410,7 @@ async function startServer() {
           console.log(`Room ${clientInfo.roomId} is empty, cleaning up...`);
           dbOps.rooms.deleteOne({ id: clientInfo.roomId });
           dbOps.players.deleteMany({ room_id: clientInfo.roomId });
-          dbOps.messages.deleteMany({ room_id: clientInfo.roomId });
+          // We keep messages for persistence as requested
           dbOps.votes.deleteMany({ room_id: clientInfo.roomId });
         } else {
           broadcastRoomState(clientInfo.roomId);

@@ -4,7 +4,8 @@ import {
   Users, MessageSquare, Shield, Send, User, 
   Settings, LogOut, Plus, LogIn, Crown, 
   Lock, Eye, EyeOff, AlertCircle, CheckCircle2,
-  Trophy, MessageCircle, UserX, UserCheck, Copy
+  Trophy, MessageCircle, UserX, UserCheck, Copy,
+  Menu, X
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { Player, Message, Room, GameState } from './types';
@@ -50,19 +51,49 @@ export default function App() {
 
   const [copied, setCopied] = useState(false);
 
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
   const copyRoomCode = () => {
     if (gameState.room?.id) {
-      navigator.clipboard.writeText(gameState.room.id);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      const text = gameState.room.id;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        }).catch(() => {
+          // Fallback if clipboard API fails
+          fallbackCopyText(text);
+        });
+      } else {
+        fallbackCopyText(text);
+      }
     }
   };
 
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  const fallbackCopyText = (text: string) => {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    
+    // Ensure it's not visible but part of the DOM
+    textArea.style.position = "fixed";
+    textArea.style.left = "-9999px";
+    textArea.style.top = "0";
+    document.body.appendChild(textArea);
+    
+    textArea.focus();
+    textArea.select();
+    
+    try {
+      document.execCommand('copy');
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Fallback copy failed', err);
     }
-  }, [gameState.messages, activeTab]);
+    
+    document.body.removeChild(textArea);
+  };
+
 
   const connect = (rId: string, pId: string, name: string, host: boolean) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -246,11 +277,11 @@ export default function App() {
             >
               <Users size={48} />
             </motion.div>
-            <h1 className="text-5xl font-bold tracking-tighter italic">THE CIRCLE</h1>
-            <p className="text-zinc-400">Social Deception & Strategy Game</p>
+            <h1 className="text-4xl md:text-5xl font-bold tracking-tighter italic">THE CIRCLE</h1>
+            <p className="text-zinc-400 text-sm md:text-base">Social Deception & Strategy Game</p>
           </div>
 
-          <div className="bg-zinc-900/50 border border-zinc-800 p-8 rounded-3xl space-y-6 backdrop-blur-xl">
+          <div className="bg-zinc-900/50 border border-zinc-800 p-6 md:p-8 rounded-3xl space-y-6 backdrop-blur-xl">
             <div className="space-y-4">
               <div>
                 <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2 block">Your Real Name (Hidden)</label>
@@ -301,10 +332,44 @@ export default function App() {
 
   const me = gameState.players.find(p => p.id === playerId);
   const currentRound = gameState.room?.round_number || 1;
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      // If it's public chat and user is not host, force scroll to bottom to prevent "scrolling up"
+      if (activeTab === 'public' && !me?.is_host) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      } else {
+        // Normal auto-scroll for others/private
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    }
+  }, [gameState.messages, activeTab, me?.is_host]);
+
+  // Prevent manual scrolling up for players in public chat
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || activeTab !== 'public' || me?.is_host) return;
+
+    const handleScroll = () => {
+      // If user tries to scroll up more than 50px from bottom, snap back
+      const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+      if (!isAtBottom) {
+        el.scrollTop = el.scrollHeight - el.clientHeight;
+      }
+    };
+
+    el.addEventListener('scroll', handleScroll);
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, [activeTab, me?.is_host, gameState.messages.length]);
   
   const publicMessages = gameState.messages.filter(m => {
-    if (m.receiver_id) return false;
+    // Strictly exclude any message with a receiver_id (private messages)
+    if (m.receiver_id !== null && m.receiver_id !== undefined && m.receiver_id !== '') return false;
+    
+    // Only text, questions, and answers in public chat
     if (!['text', 'question', 'answer'].includes(m.type)) return false;
+    
+    // Host sees all public messages, players only see current round
     if (me?.is_host) return true;
     return m.round_number === currentRound;
   });
@@ -329,14 +394,36 @@ export default function App() {
   const playerAnswers = gameState.messages.filter(m => m.type === 'answer');
 
   return (
-    <div className="h-screen bg-[#0a0a0a] text-white flex overflow-hidden font-sans">
+    <div className="h-screen bg-[#0a0a0a] text-white flex overflow-hidden font-sans relative">
+      {/* Mobile Sidebar Overlay */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden"
+          />
+        )}
+      </AnimatePresence>
+
       {/* Sidebar */}
-      <div className="w-80 border-r border-zinc-800 flex flex-col bg-zinc-900/30">
+      <div className={cn(
+        "fixed inset-y-0 left-0 z-50 w-80 border-r border-zinc-800 flex flex-col bg-zinc-900 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 md:bg-zinc-900/30",
+        isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+      )}>
         <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
           <div>
             <h2 className="text-xl font-bold italic tracking-tighter">THE CIRCLE</h2>
             <div className="flex items-center space-x-2">
-              <span className="text-xs text-zinc-500 font-mono uppercase">ROOM: {gameState.room?.id}</span>
+              <span 
+                className="text-xs text-zinc-500 font-mono uppercase cursor-pointer hover:text-indigo-400 transition-all"
+                onClick={copyRoomCode}
+                title="Click to copy"
+              >
+                ROOM: {gameState.room?.id}
+              </span>
               <button 
                 onClick={copyRoomCode}
                 className="p-1 hover:bg-zinc-800 rounded text-zinc-500 hover:text-indigo-400 transition-all relative"
@@ -355,13 +442,21 @@ export default function App() {
               </button>
             </div>
           </div>
-          {me?.is_host ? <Shield className="text-indigo-500" size={20} /> : <User className="text-zinc-500" size={20} />}
+          <div className="flex items-center space-x-2">
+            {me?.is_host ? <Shield className="text-indigo-500" size={20} /> : <User className="text-zinc-500" size={20} />}
+            <button 
+              onClick={() => setIsSidebarOpen(false)}
+              className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-500 md:hidden"
+            >
+              <X size={20} />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-6">
           <div className="space-y-2">
             <button 
-              onClick={() => setActiveTab('public')}
+              onClick={() => { setActiveTab('public'); setIsSidebarOpen(false); }}
               className={cn(
                 "w-full flex items-center p-3 rounded-xl transition-all",
                 activeTab === 'public' ? "bg-indigo-600 text-white" : "hover:bg-zinc-800 text-zinc-400"
@@ -371,7 +466,7 @@ export default function App() {
               <span className="font-semibold">Public Chat</span>
             </button>
             <button 
-              onClick={() => setActiveTab('private')}
+              onClick={() => { setActiveTab('private'); setIsSidebarOpen(false); }}
               className={cn(
                 "w-full flex items-center p-3 rounded-xl transition-all",
                 activeTab === 'private' ? "bg-indigo-600 text-white" : "hover:bg-zinc-800 text-zinc-400"
@@ -381,7 +476,7 @@ export default function App() {
               <span className="font-semibold">Private DMs</span>
             </button>
             <button 
-              onClick={() => setActiveTab('players')}
+              onClick={() => { setActiveTab('players'); setIsSidebarOpen(false); }}
               className={cn(
                 "w-full flex items-center p-3 rounded-xl transition-all",
                 activeTab === 'players' ? "bg-indigo-600 text-white" : "hover:bg-zinc-800 text-zinc-400"
@@ -392,7 +487,7 @@ export default function App() {
             </button>
             {me?.is_host && (
               <button 
-                onClick={() => setActiveTab('host')}
+                onClick={() => { setActiveTab('host'); setIsSidebarOpen(false); }}
                 className={cn(
                   "w-full flex items-center p-3 rounded-xl transition-all",
                   activeTab === 'host' ? "bg-amber-600 text-white" : "hover:bg-zinc-800 text-zinc-400"
@@ -412,7 +507,7 @@ export default function App() {
                 .map(p => (
                 <button
                   key={p.id}
-                  onClick={() => setSelectedPlayerId(p.id)}
+                  onClick={() => { setSelectedPlayerId(p.id); setIsSidebarOpen(false); }}
                   className={cn(
                     "w-full flex items-center p-2 rounded-xl transition-all",
                     selectedPlayerId === p.id ? "bg-indigo-600/20 border border-indigo-500/30" : "hover:bg-zinc-800/50 border border-transparent"
@@ -458,28 +553,36 @@ export default function App() {
       {/* Main Content */}
       <div className="flex-1 flex flex-col relative">
         {/* Header */}
-        <div className="h-16 border-b border-zinc-800 flex items-center justify-between px-6 bg-zinc-900/20">
-          <div className="flex items-center space-x-4">
-            {activeTab === 'public' && <h3 className="font-bold text-lg">Public Room</h3>}
+        <div className="h-16 border-b border-zinc-800 flex items-center justify-between px-4 md:px-6 bg-zinc-900/20">
+          <div className="flex items-center space-x-3 md:space-x-4">
+            <button 
+              onClick={() => setIsSidebarOpen(true)}
+              className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 md:hidden"
+            >
+              <Menu size={20} />
+            </button>
+            {activeTab === 'public' && <h3 className="font-bold text-sm md:text-lg">Public Room</h3>}
             {activeTab === 'private' && selectedPlayerId && (
-              <div className="flex items-center space-x-3">
+              <div className="flex items-center space-x-2 md:space-x-3">
                 <img 
                   src={gameState.players.find(p => p.id === selectedPlayerId)?.avatar_url || ''} 
-                  className="w-8 h-8 rounded-full" 
+                  className="w-6 h-6 md:w-8 md:h-8 rounded-full" 
                   referrerPolicy="no-referrer"
                 />
-                <h3 className="font-bold text-lg">{gameState.players.find(p => p.id === selectedPlayerId)?.fake_name}</h3>
+                <h3 className="font-bold text-sm md:text-lg truncate max-w-[100px] md:max-w-none">
+                  {gameState.players.find(p => p.id === selectedPlayerId)?.fake_name}
+                </h3>
               </div>
             )}
-            {activeTab === 'players' && <h3 className="font-bold text-lg">All Players</h3>}
-            {activeTab === 'host' && <h3 className="font-bold text-lg text-amber-500">Host Command Center</h3>}
+            {activeTab === 'players' && <h3 className="font-bold text-sm md:text-lg">All Players</h3>}
+            {activeTab === 'host' && <h3 className="font-bold text-sm md:text-lg text-amber-500">Host Center</h3>}
           </div>
 
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2 md:space-x-4">
             {gameState.room?.timer_active === 1 && (
-              <div className="flex items-center bg-zinc-800 px-3 py-1 rounded-full border border-zinc-700">
-                <Settings size={14} className="mr-2 text-zinc-500 animate-spin" />
-                <span className="text-xs font-mono font-bold">
+              <div className="flex items-center bg-zinc-800 px-2 md:px-3 py-1 rounded-full border border-zinc-700">
+                <Settings size={12} className="mr-1 md:mr-2 text-zinc-500 animate-spin" />
+                <span className="text-[10px] md:text-xs font-mono font-bold">
                   {Math.floor(gameState.room.timer_left / 60)}:{(gameState.room.timer_left % 60).toString().padStart(2, '0')}
                 </span>
               </div>
@@ -500,7 +603,7 @@ export default function App() {
         {/* Chat / Content Area */}
         <div className="flex-1 overflow-hidden flex flex-col">
           {activeTab === 'players' ? (
-            <div className="p-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 overflow-y-auto">
+            <div className="p-4 md:p-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6 overflow-y-auto">
               {gameState.players.map(p => (
                 <PlayerCard 
                   key={p.id} 
@@ -512,7 +615,7 @@ export default function App() {
                     setActiveTab('private');
                   }}
                   onVote={() => castVote(p.id)}
-                  canVote={gameState.room?.status === 'voting' && !me?.is_blocked && p.id !== playerId}
+                  canVote={gameState.room?.status === 'voting' && me?.is_host === 1 && p.id !== playerId}
                 />
               ))}
             </div>
@@ -549,7 +652,7 @@ export default function App() {
             />
           ) : (
             <>
-              <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-4">
+              <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
                 {(activeTab === 'public' ? publicMessages : privateMessages).map((m) => (
                   <MessageBubble 
                     key={m.id} 
@@ -575,11 +678,11 @@ export default function App() {
               </div>
 
               {/* Input Area */}
-              <div className="p-6 border-t border-zinc-800 bg-zinc-900/10">
+              <div className="p-4 md:p-6 border-t border-zinc-800 bg-zinc-900/10">
                 {me?.is_blocked ? (
-                  <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-2xl flex items-center justify-center text-red-500">
-                    <EyeOff size={20} className="mr-3" />
-                    <span className="font-semibold">You are blocked and cannot send messages.</span>
+                  <div className="bg-red-500/10 border border-red-500/20 p-3 md:p-4 rounded-2xl flex items-center justify-center text-red-500 text-xs md:text-sm">
+                    <EyeOff size={18} className="mr-2 md:mr-3" />
+                    <span className="font-semibold text-center">You are blocked and cannot send messages.</span>
                   </div>
                 ) : (
                   <div className="relative">
@@ -589,13 +692,13 @@ export default function App() {
                       onChange={(e) => setMessageInput(e.target.value)}
                       onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
                       placeholder={activeTab === 'public' ? "Message everyone..." : "Send a private message..."}
-                      className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl px-6 py-4 pr-16 focus:outline-none focus:border-indigo-500 transition-all"
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl px-4 md:px-6 py-3 md:py-4 pr-14 md:pr-16 focus:outline-none focus:border-indigo-500 transition-all text-sm md:text-base"
                     />
                     <button 
                       onClick={sendMessage}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 p-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-all"
+                      className="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 p-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-all"
                     >
-                      <Send size={20} />
+                      <Send size={18} />
                     </button>
                   </div>
                 )}
@@ -615,38 +718,40 @@ export default function App() {
               exit={{ scale: 0.9, opacity: 0 }}
               className="bg-zinc-900 border border-zinc-800 w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl"
             >
-              <div className="relative h-48 bg-gradient-to-br from-indigo-600 to-purple-700">
+              <div className="relative h-32 md:h-48 bg-gradient-to-br from-indigo-600 to-purple-700">
                 <button 
                   onClick={() => setShowProfileModal(null)}
                   className="absolute top-4 right-4 p-2 bg-black/20 hover:bg-black/40 rounded-full transition-all"
                 >
-                  <LogOut size={20} />
+                  <X size={20} />
                 </button>
-                <div className="absolute -bottom-12 left-8">
+                <div className="absolute -bottom-10 md:-bottom-12 left-6 md:left-8">
                   <img 
                     src={showProfileModal.avatar_url || ''} 
-                    className="w-32 h-32 rounded-3xl border-4 border-zinc-900 shadow-xl" 
+                    className="w-24 h-24 md:w-32 md:h-32 rounded-3xl border-4 border-zinc-900 shadow-xl object-cover" 
                     referrerPolicy="no-referrer"
                   />
                 </div>
               </div>
-              <div className="pt-16 p-8 space-y-6">
-                <div className="flex items-center justify-between">
+              <div className="pt-12 md:pt-16 p-6 md:p-8 space-y-4 md:space-y-6">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
                   <div>
-                    <h2 className="text-3xl font-bold">{showProfileModal.fake_name}</h2>
-                    <p className="text-indigo-400 font-semibold">{showProfileModal.personality} • {showProfileModal.age} years old</p>
+                    <h2 className="text-2xl md:text-3xl font-bold">{showProfileModal.fake_name}</h2>
+                    <p className="text-indigo-400 font-semibold text-sm md:text-base">{showProfileModal.personality} • {showProfileModal.age} years old</p>
                   </div>
-                  {showProfileModal.is_blocked ? (
-                    <div className="bg-red-500/20 text-red-500 px-4 py-1 rounded-full border border-red-500/30 text-xs font-bold uppercase">Blocked</div>
-                  ) : (
-                    <div className="bg-green-500/20 text-green-500 px-4 py-1 rounded-full border border-green-500/30 text-xs font-bold uppercase">Active</div>
-                  )}
+                  <div className="flex">
+                    {showProfileModal.is_blocked ? (
+                      <div className="bg-red-500/20 text-red-500 px-3 py-1 rounded-full border border-red-500/30 text-[10px] md:text-xs font-bold uppercase">Blocked</div>
+                    ) : (
+                      <div className="bg-green-500/20 text-green-500 px-3 py-1 rounded-full border border-green-500/30 text-[10px] md:text-xs font-bold uppercase">Active</div>
+                    )}
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Biography</h4>
-                  <p className="text-zinc-300 leading-relaxed">{showProfileModal.bio}</p>
+                <div className="space-y-1 md:space-y-2">
+                  <h4 className="text-[10px] md:text-xs font-bold text-zinc-500 uppercase tracking-widest">Biography</h4>
+                  <p className="text-zinc-300 text-sm md:text-base leading-relaxed">{showProfileModal.bio}</p>
                 </div>
-                <div className="pt-4 flex space-x-4">
+                <div className="pt-2 md:pt-4 flex space-x-4">
                   <button 
                     onClick={() => {
                       setSelectedPlayerId(showProfileModal.id);
@@ -705,12 +810,12 @@ function ProfileSetup({ onComplete }: { onComplete: (p: any) => void }) {
         animate={{ y: 0, opacity: 1 }}
         className="max-w-2xl w-full bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden shadow-2xl"
       >
-        <div className="p-8 border-b border-zinc-800 bg-zinc-900/50">
-          <h2 className="text-3xl font-bold italic tracking-tighter">CREATE YOUR IDENTITY</h2>
-          <p className="text-zinc-500">This profile will be permanent. Choose wisely.</p>
+        <div className="p-6 md:p-8 border-b border-zinc-800 bg-zinc-900/50">
+          <h2 className="text-2xl md:text-3xl font-bold italic tracking-tighter uppercase">Create Your Identity</h2>
+          <p className="text-zinc-500 text-sm">This profile will be permanent. Choose wisely.</p>
         </div>
         
-        <div className="p-8 grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div className="p-6 md:p-8 grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8">
           <div className="space-y-6">
             <div>
               <label className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2 block">Fake Name</label>
@@ -819,13 +924,13 @@ function MessageBubble({ message, isMe, sender, onAvatarClick, onAnswer }: Messa
 
   if (message.type === 'question' && !isMe) {
     return (
-      <div className="flex flex-col items-start w-full max-w-md">
-        <div className="bg-amber-600/10 border border-amber-500/30 rounded-2xl p-6 w-full space-y-4 shadow-lg">
+      <div className="flex flex-col items-start w-full max-w-[90%] md:max-w-md">
+        <div className="bg-amber-600/10 border border-amber-500/30 rounded-2xl p-4 md:p-6 w-full space-y-3 md:space-y-4 shadow-lg">
           <div className="flex items-center space-x-2 text-amber-500">
-            <Shield size={16} />
-            <span className="text-xs font-bold uppercase tracking-widest">Host Question</span>
+            <Shield size={14} />
+            <span className="text-[10px] font-bold uppercase tracking-widest">Host Question</span>
           </div>
-          <p className="text-lg font-medium text-zinc-100">{message.content}</p>
+          <p className="text-base md:text-lg font-medium text-zinc-100">{message.content}</p>
           {!submitted ? (
             <div className="space-y-3">
               <input 
@@ -865,10 +970,10 @@ function MessageBubble({ message, isMe, sender, onAvatarClick, onAnswer }: Messa
     <div className={cn("flex flex-col", isMe ? "items-end" : "items-start")}>
       <div className={cn("flex items-end space-x-2", isMe && "flex-row-reverse space-x-reverse")}>
         <button onClick={onAvatarClick} className="flex-shrink-0">
-          <img src={sender?.avatar_url || ''} className="w-10 h-10 rounded-full mb-1 hover:ring-2 hover:ring-indigo-500 transition-all object-cover border border-zinc-800" referrerPolicy="no-referrer" />
+          <img src={sender?.avatar_url || ''} className="w-8 h-8 md:w-10 md:h-10 rounded-full mb-1 hover:ring-2 hover:ring-indigo-500 transition-all object-cover border border-zinc-800" referrerPolicy="no-referrer" />
         </button>
         <div className={cn(
-          "max-w-md px-4 py-3 rounded-2xl text-sm shadow-sm",
+          "max-w-[85%] md:max-w-md px-3 md:px-4 py-2 md:py-3 rounded-2xl text-xs md:text-sm shadow-sm",
           isMe ? "bg-indigo-600 text-white rounded-br-none" : "bg-zinc-800 text-zinc-100 rounded-bl-none",
           message.type === 'answer' && "bg-emerald-600/20 border border-emerald-500/30 text-emerald-200"
         )}>
@@ -902,12 +1007,12 @@ function PlayerCard({ player, isMe, onView, onMessage, onVote, canVote }: Player
         player.is_blocked ? "border-red-900/50 opacity-80" : "border-zinc-800 hover:border-indigo-500/50"
       )}
     >
-      <div className="p-6 flex flex-col items-center text-center space-y-4">
+      <div className="p-4 md:p-6 flex flex-col items-center text-center space-y-3 md:space-y-4">
         <div className="relative">
           <img 
             src={player.avatar_url || ''} 
             className={cn(
-              "w-24 h-24 rounded-2xl border-2 transition-all object-cover", 
+              "w-20 h-20 md:w-24 md:h-24 rounded-2xl border-2 transition-all object-cover", 
               player.is_blocked ? "border-red-600 grayscale opacity-50" : "border-zinc-800 group-hover:border-indigo-500"
             )} 
             referrerPolicy="no-referrer"
@@ -922,6 +1027,9 @@ function PlayerCard({ player, isMe, onView, onMessage, onVote, canVote }: Player
               <Crown size={14} />
             </div>
           )}
+        </div>
+        <div className="bg-indigo-600/10 px-3 py-1 rounded-full border border-indigo-500/20">
+          <span className="text-indigo-400 font-mono font-bold text-sm">{player.points || 0}</span>
         </div>
         <div>
           <div className="flex items-center justify-center space-x-1">
@@ -977,10 +1085,10 @@ function HostPanel({
   const [timerInput, setTimerInput] = useState('300');
 
   return (
-    <div className="flex-1 overflow-y-auto p-8 space-y-8">
+    <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 md:space-y-8">
       {/* Game Controls */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+        <div className="bg-zinc-900 border border-zinc-800 p-4 md:p-6 rounded-3xl space-y-4">
           <h4 className="text-sm font-bold text-zinc-500 uppercase tracking-widest flex items-center">
             <Settings size={16} className="mr-2" /> Game Flow Control
           </h4>
@@ -1097,19 +1205,32 @@ function HostPanel({
                   <td className="px-6 py-4">
                     <div className="flex space-x-2">
                       {!p.is_host && (
-                        <button 
-                          onClick={() => onToggleBlock(p.id, p.is_blocked)}
-                          className={cn("p-2 rounded-lg transition-all", p.is_blocked ? "bg-green-600/20 text-green-500" : "bg-red-600/20 text-red-500")}
-                        >
-                          {p.is_blocked ? <UserCheck size={16} /> : <UserX size={16} />}
-                        </button>
+                        <div className="flex space-x-1">
+                          <button 
+                            onClick={() => onToggleBlock(p.id, p.is_blocked)}
+                            className={cn("p-2 rounded-lg transition-all", p.is_blocked ? "bg-green-600/20 text-green-500" : "bg-red-600/20 text-red-500")}
+                            title={p.is_blocked ? "Unblock Player" : "Block Player"}
+                          >
+                            {p.is_blocked ? <UserCheck size={16} /> : <UserX size={16} />}
+                          </button>
+                        </div>
                       )}
-                      <button 
-                        onClick={() => onAwardPoints(p.id, 10)}
-                        className="p-2 bg-indigo-600/20 text-indigo-500 rounded-lg hover:bg-indigo-600/30 transition-all"
-                      >
-                        +10
-                      </button>
+                      <div className="flex space-x-1">
+                        <button 
+                          onClick={() => onAwardPoints(p.id, -10)}
+                          className="p-2 bg-red-600/20 text-red-500 rounded-lg hover:bg-red-600/30 transition-all font-bold text-[10px]"
+                          title="Deduct 10 Points"
+                        >
+                          -10
+                        </button>
+                        <button 
+                          onClick={() => onAwardPoints(p.id, 10)}
+                          className="p-2 bg-indigo-600/20 text-indigo-500 rounded-lg hover:bg-indigo-600/30 transition-all font-bold text-[10px]"
+                          title="Award 10 Points"
+                        >
+                          +10
+                        </button>
+                      </div>
                     </div>
                   </td>
                 </tr>
