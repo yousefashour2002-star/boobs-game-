@@ -2,7 +2,7 @@ import express from "express";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
-import mongoose from "mongoose";
+import Database from "better-sqlite3";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import multer from "multer";
@@ -11,64 +11,178 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/boobsgame";
+// Initialize SQLite database
+const db = new Database("database.db");
 
-mongoose.connect(MONGODB_URI)
-  .then(() => console.log("Connected to MongoDB"))
-  .catch(err => console.error("MongoDB connection error:", err));
+// Create tables if they don't exist
+db.exec(`
+  CREATE TABLE IF NOT EXISTS players (
+    id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    real_name TEXT,
+    fake_name TEXT,
+    age INTEGER,
+    personality TEXT,
+    bio TEXT,
+    avatar_url TEXT,
+    is_blocked INTEGER DEFAULT 0,
+    is_host INTEGER DEFAULT 0,
+    points INTEGER DEFAULT 0,
+    joined_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 
-// Schemas
-const playerSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  room_id: { type: String, required: true },
-  real_name: String,
-  fake_name: String,
-  age: Number,
-  personality: String,
-  bio: String,
-  avatar_url: String,
-  is_blocked: { type: Number, default: 0 },
-  is_host: { type: Number, default: 0 },
-  points: { type: Number, default: 0 },
-  joined_at: { type: Date, default: Date.now }
-});
+  CREATE TABLE IF NOT EXISTS rooms (
+    id TEXT PRIMARY KEY,
+    host_id TEXT NOT NULL,
+    status TEXT DEFAULT 'waiting',
+    chat_time INTEGER DEFAULT 300,
+    voting_time INTEGER DEFAULT 60,
+    round_number INTEGER DEFAULT 1,
+    timer_left INTEGER DEFAULT 0,
+    timer_active INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 
-const roomSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  host_id: { type: String, required: true },
-  status: { type: String, default: 'waiting' },
-  chat_time: { type: Number, default: 300 },
-  voting_time: { type: Number, default: 60 },
-  round_number: { type: Number, default: 1 },
-  timer_left: { type: Number, default: 0 },
-  timer_active: { type: Number, default: 0 },
-  created_at: { type: Date, default: Date.now }
-});
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    receiver_id TEXT,
+    content TEXT,
+    type TEXT DEFAULT 'text',
+    round_number INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 
-const messageSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  room_id: { type: String, required: true },
-  sender_id: { type: String, required: true },
-  receiver_id: String,
-  content: String,
-  type: { type: String, default: 'text' },
-  round_number: { type: Number, default: 1 },
-  created_at: { type: Date, default: Date.now }
-});
+  CREATE TABLE IF NOT EXISTS votes (
+    id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    voter_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    round_id TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
 
-const voteSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  room_id: { type: String, required: true },
-  voter_id: { type: String, required: true },
-  target_id: { type: String, required: true },
-  round_id: String,
-  created_at: { type: Date, default: Date.now }
-});
-
-const Player = mongoose.model("Player", playerSchema);
-const Room = mongoose.model("Room", roomSchema);
-const Message = mongoose.model("Message", messageSchema);
-const Vote = mongoose.model("Vote", voteSchema);
+// Helper functions for database operations
+const dbOps = {
+  players: {
+    findOne: (query: any) => {
+      const keys = Object.keys(query);
+      const where = keys.map(k => `${k} = ?`).join(' AND ');
+      return db.prepare(`SELECT * FROM players WHERE ${where}`).get(...Object.values(query));
+    },
+    find: (query: any) => {
+      const keys = Object.keys(query);
+      const where = keys.map(k => `${k} = ?`).join(' AND ');
+      return db.prepare(`SELECT * FROM players WHERE ${where}`).all(...Object.values(query));
+    },
+    create: (data: any) => {
+      const keys = Object.keys(data);
+      const placeholders = keys.map(() => '?').join(', ');
+      return db.prepare(`INSERT INTO players (${keys.join(', ')}) VALUES (${placeholders})`).run(...Object.values(data));
+    },
+    update: (query: any, data: any) => {
+      const qKeys = Object.keys(query);
+      const qWhere = qKeys.map(k => `${k} = ?`).join(' AND ');
+      const dKeys = Object.keys(data);
+      const dSet = dKeys.map(k => {
+        if (typeof data[k] === 'object' && data[k].$inc) {
+          return `${k} = ${k} + ?`;
+        }
+        return `${k} = ?`;
+      }).join(', ');
+      
+      const values = dKeys.map(k => {
+        if (typeof data[k] === 'object' && data[k].$inc) {
+          return data[k].$inc;
+        }
+        return data[k];
+      });
+      
+      return db.prepare(`UPDATE players SET ${dSet} WHERE ${qWhere}`).run(...values, ...Object.values(query));
+    },
+    deleteMany: (query: any) => {
+      const keys = Object.keys(query);
+      const where = keys.map(k => `${k} = ?`).join(' AND ');
+      return db.prepare(`DELETE FROM players WHERE ${where}`).run(...Object.values(query));
+    }
+  },
+  rooms: {
+    findOne: (query: any) => {
+      const keys = Object.keys(query);
+      const where = keys.map(k => `${k} = ?`).join(' AND ');
+      return db.prepare(`SELECT * FROM rooms WHERE ${where}`).get(...Object.values(query));
+    },
+    find: (query: any) => {
+      const keys = Object.keys(query);
+      const where = keys.map(k => `${k} = ?`).join(' AND ');
+      return db.prepare(`SELECT * FROM rooms WHERE ${where}`).all(...Object.values(query));
+    },
+    create: (data: any) => {
+      const keys = Object.keys(data);
+      const placeholders = keys.map(() => '?').join(', ');
+      return db.prepare(`INSERT INTO rooms (${keys.join(', ')}) VALUES (${placeholders})`).run(...Object.values(data));
+    },
+    update: (query: any, data: any) => {
+      const qKeys = Object.keys(query);
+      const qWhere = qKeys.map(k => `${k} = ?`).join(' AND ');
+      const dKeys = Object.keys(data);
+      const dSet = dKeys.map(k => {
+        if (typeof data[k] === 'object' && data[k].$inc) {
+          return `${k} = ${k} + ?`;
+        }
+        return `${k} = ?`;
+      }).join(', ');
+      
+      const values = dKeys.map(k => {
+        if (typeof data[k] === 'object' && data[k].$inc) {
+          return data[k].$inc;
+        }
+        return data[k];
+      });
+      
+      return db.prepare(`UPDATE rooms SET ${dSet} WHERE ${qWhere}`).run(...values, ...Object.values(query));
+    },
+    deleteOne: (query: any) => {
+      const keys = Object.keys(query);
+      const where = keys.map(k => `${k} = ?`).join(' AND ');
+      return db.prepare(`DELETE FROM rooms WHERE ${where} LIMIT 1`).run(...Object.values(query));
+    }
+  },
+  messages: {
+    find: (query: any) => {
+      const keys = Object.keys(query);
+      const where = keys.map(k => `${k} = ?`).join(' AND ');
+      return db.prepare(`SELECT * FROM messages WHERE ${where} ORDER BY created_at ASC`).all(...Object.values(query));
+    },
+    create: (data: any) => {
+      const keys = Object.keys(data);
+      const placeholders = keys.map(() => '?').join(', ');
+      return db.prepare(`INSERT INTO messages (${keys.join(', ')}) VALUES (${placeholders})`).run(...Object.values(data));
+    },
+    deleteMany: (query: any) => {
+      const keys = Object.keys(query);
+      const where = keys.map(k => `${k} = ?`).join(' AND ');
+      return db.prepare(`DELETE FROM messages WHERE ${where}`).run(...Object.values(query));
+    }
+  },
+  votes: {
+    create: (data: any) => {
+      const keys = Object.keys(data);
+      const placeholders = keys.map(() => '?').join(', ');
+      return db.prepare(`INSERT INTO votes (${keys.join(', ')}) VALUES (${placeholders})`).run(...Object.values(data));
+    },
+    getVoteCounts: (roomId: string) => {
+      return db.prepare(`SELECT target_id as _id, COUNT(*) as count FROM votes WHERE room_id = ? GROUP BY target_id ORDER BY count DESC`).all(roomId);
+    },
+    deleteMany: (query: any) => {
+      const keys = Object.keys(query);
+      const where = keys.map(k => `${k} = ?`).join(' AND ');
+      return db.prepare(`DELETE FROM votes WHERE ${where}`).run(...Object.values(query));
+    }
+  }
+};
 
 // Ensure uploads directory exists
 const uploadDir = path.join(process.cwd(), "uploads");
@@ -105,13 +219,12 @@ async function startServer() {
   app.post("/api/rooms", async (req, res) => {
     const id = Math.random().toString(36).substring(2, 8).toUpperCase();
     const hostId = uuidv4();
-    const room = new Room({ id, host_id: hostId });
-    await room.save();
+    dbOps.rooms.create({ id, host_id: hostId });
     res.json({ id, hostId });
   });
 
   app.get("/api/rooms/:id", async (req, res) => {
-    const room = await Room.findOne({ id: req.params.id });
+    const room = dbOps.rooms.findOne({ id: req.params.id });
     if (!room) return res.status(404).json({ error: "Room not found" });
     res.json(room);
   });
@@ -132,22 +245,23 @@ async function startServer() {
           clientInfo = { roomId, playerId };
           clients.set(playerId, { ws, roomId, playerId });
 
-          // Check if player exists, if not create
-          let player = await Player.findOne({ id: playerId });
+          // Check if player exists, if not create, otherwise update room_id
+          let player = dbOps.players.findOne({ id: playerId });
           if (!player) {
-            player = new Player({ id: playerId, room_id: roomId, real_name: realName, is_host: isHost ? 1 : 0 });
-            await player.save();
+            dbOps.players.create({ id: playerId, room_id: roomId, real_name: realName, is_host: isHost ? 1 : 0 });
+          } else {
+            dbOps.players.update({ id: playerId }, { room_id: roomId, is_host: isHost ? 1 : 0, real_name: realName });
           }
 
           broadcastToRoom(roomId, { type: "PLAYER_JOINED", payload: { playerId, realName } });
-          sendRoomState(roomId, ws);
+          broadcastRoomState(roomId);
           break;
         }
 
         case "UPDATE_PROFILE": {
           if (!clientInfo) return;
           const { fakeName, age, personality, bio, avatarUrl } = payload;
-          await Player.findOneAndUpdate(
+          dbOps.players.update(
             { id: clientInfo.playerId },
             { fake_name: fakeName, age, personality, bio, avatar_url: avatarUrl }
           );
@@ -156,6 +270,7 @@ async function startServer() {
             type: "PROFILE_UPDATED", 
             payload: { playerId: clientInfo.playerId, fakeName, avatarUrl } 
           });
+          broadcastRoomState(clientInfo.roomId);
           break;
         }
 
@@ -163,32 +278,33 @@ async function startServer() {
           if (!clientInfo) return;
           const { content, receiverId, msgType } = payload;
           
-          const player = await Player.findOne({ id: clientInfo.playerId });
+          const player = dbOps.players.findOne({ id: clientInfo.playerId });
           if (player?.is_blocked && msgType === 'text') return;
 
-          const room = await Room.findOne({ id: clientInfo.roomId });
+          const room = dbOps.rooms.findOne({ id: clientInfo.roomId });
           if (!room) return;
 
           const msgId = uuidv4();
-          const newMessage = new Message({
+          const createdAt = new Date().toISOString();
+          dbOps.messages.create({
             id: msgId,
             room_id: clientInfo.roomId,
             sender_id: clientInfo.playerId,
             receiver_id: receiverId || null,
             content,
             type: msgType || 'text',
-            round_number: room.round_number
+            round_number: room.round_number,
+            created_at: createdAt
           });
-          await newMessage.save();
 
           const msgData = {
             id: msgId,
-            senderId: clientInfo.playerId,
-            receiverId: receiverId || null,
+            sender_id: clientInfo.playerId,
+            receiver_id: receiverId || null,
             content,
             type: msgType || 'text',
             round_number: room.round_number,
-            created_at: newMessage.created_at
+            created_at: createdAt
           };
 
           if (!receiverId) {
@@ -208,7 +324,7 @@ async function startServer() {
 
         case "START_VOTING": {
           if (!clientInfo) return;
-          await Room.findOneAndUpdate({ id: clientInfo.roomId }, { status: 'voting' });
+          dbOps.rooms.update({ id: clientInfo.roomId }, { status: 'voting' });
           broadcastToRoom(clientInfo.roomId, { type: "VOTING_STARTED" });
           break;
         }
@@ -217,46 +333,46 @@ async function startServer() {
           if (!clientInfo) return;
           const { targetId } = payload;
           const voteId = uuidv4();
-          const vote = new Vote({ id: voteId, room_id: clientInfo.roomId, voter_id: clientInfo.playerId, target_id: targetId });
-          await vote.save();
+          dbOps.votes.create({ id: voteId, room_id: clientInfo.roomId, voter_id: clientInfo.playerId, target_id: targetId });
           break;
         }
 
         case "END_VOTING": {
           if (!clientInfo) return;
-          const votes = await Vote.aggregate([
-            { $match: { room_id: clientInfo.roomId } },
-            { $group: { _id: "$target_id", count: { $sum: 1 } } },
-            { $sort: { count: -1 } }
-          ]);
+          const votes = dbOps.votes.getVoteCounts(clientInfo.roomId) as any[];
           
           if (votes.length > 0) {
             const mostVoted = votes[0]._id;
-            await Player.findOneAndUpdate({ id: mostVoted }, { is_blocked: 1 });
+            dbOps.players.update({ id: mostVoted }, { is_blocked: 1 });
             broadcastToRoom(clientInfo.roomId, { type: "PLAYER_BLOCKED", payload: { playerId: mostVoted } });
           }
 
-          const updatedRoom = await Room.findOneAndUpdate(
+          const room = dbOps.rooms.findOne({ id: clientInfo.roomId });
+          const nextRound = (room.round_number || 1) + 1;
+          
+          dbOps.rooms.update(
             { id: clientInfo.roomId },
-            { status: 'playing', $inc: { round_number: 1 } },
-            { new: true }
+            { status: 'playing', round_number: nextRound }
           );
-          await Vote.deleteMany({ room_id: clientInfo.roomId });
+          
+          const updatedRoom = dbOps.rooms.findOne({ id: clientInfo.roomId });
+          dbOps.votes.deleteMany({ room_id: clientInfo.roomId });
           broadcastToRoom(clientInfo.roomId, { type: "VOTING_ENDED", payload: { room: updatedRoom } });
+          broadcastRoomState(clientInfo.roomId);
           break;
         }
 
         case "SET_TIMER": {
           if (!clientInfo) return;
           const { seconds } = payload;
-          await Room.findOneAndUpdate({ id: clientInfo.roomId }, { timer_left: seconds, timer_active: 1 });
+          dbOps.rooms.update({ id: clientInfo.roomId }, { timer_left: seconds, timer_active: 1 });
           broadcastToRoom(clientInfo.roomId, { type: "TIMER_UPDATED", payload: { seconds, active: 1 } });
           break;
         }
 
         case "STOP_TIMER": {
           if (!clientInfo) return;
-          await Room.findOneAndUpdate({ id: clientInfo.roomId }, { timer_active: 0 });
+          dbOps.rooms.update({ id: clientInfo.roomId }, { timer_active: 0 });
           broadcastToRoom(clientInfo.roomId, { type: "TIMER_UPDATED", payload: { active: 0 } });
           break;
         }
@@ -264,16 +380,18 @@ async function startServer() {
         case "TOGGLE_BLOCK": {
           if (!clientInfo) return;
           const { targetId, isBlocked } = payload;
-          await Player.findOneAndUpdate({ id: targetId }, { is_blocked: isBlocked ? 1 : 0 });
+          dbOps.players.update({ id: targetId }, { is_blocked: isBlocked ? 1 : 0 });
           broadcastToRoom(clientInfo.roomId, { type: "BLOCK_STATUS_CHANGED", payload: { playerId: targetId, isBlocked } });
+          broadcastRoomState(clientInfo.roomId);
           break;
         }
 
         case "UPDATE_POINTS": {
           if (!clientInfo) return;
           const { targetId, points } = payload;
-          await Player.findOneAndUpdate({ id: targetId }, { $inc: { points: points } });
+          dbOps.players.update({ id: targetId }, { points: { $inc: points } as any });
           broadcastToRoom(clientInfo.roomId, { type: "POINTS_UPDATED", payload: { playerId: targetId } });
+          broadcastRoomState(clientInfo.roomId);
           break;
         }
       }
@@ -287,10 +405,12 @@ async function startServer() {
         const roomPlayers = Array.from(clients.values()).filter(c => c.roomId === clientInfo!.roomId);
         if (roomPlayers.length === 0) {
           console.log(`Room ${clientInfo.roomId} is empty, cleaning up...`);
-          await Room.deleteOne({ id: clientInfo.roomId });
-          await Player.deleteMany({ room_id: clientInfo.roomId });
-          await Message.deleteMany({ room_id: clientInfo.roomId });
-          await Vote.deleteMany({ room_id: clientInfo.roomId });
+          dbOps.rooms.deleteOne({ id: clientInfo.roomId });
+          dbOps.players.deleteMany({ room_id: clientInfo.roomId });
+          dbOps.messages.deleteMany({ room_id: clientInfo.roomId });
+          dbOps.votes.deleteMany({ room_id: clientInfo.roomId });
+        } else {
+          broadcastRoomState(clientInfo.roomId);
         }
       }
     });
@@ -307,28 +427,40 @@ async function startServer() {
 
   // Timer interval
   setInterval(async () => {
-    const activeRooms = await Room.find({ timer_active: 1, timer_left: { $gt: 0 } });
+    const activeRooms = dbOps.rooms.find({ timer_active: 1 }) as any[];
     for (const room of activeRooms) {
+      if (room.timer_left <= 0) continue;
+      
       const newTime = room.timer_left - 1;
       if (newTime <= 0) {
-        await Room.findOneAndUpdate({ id: room.id }, { timer_left: 0, timer_active: 0 });
+        dbOps.rooms.update({ id: room.id }, { timer_left: 0, timer_active: 0 });
         broadcastToRoom(room.id, { type: "TIMER_FINISHED" });
       } else {
-        await Room.findOneAndUpdate({ id: room.id }, { timer_left: newTime });
+        dbOps.rooms.update({ id: room.id }, { timer_left: newTime });
         broadcastToRoom(room.id, { type: "TIMER_TICK", payload: { seconds: newTime } });
       }
     }
   }, 1000);
 
   async function sendRoomState(roomId: string, ws: WebSocket) {
-    const players = await Player.find({ room_id: roomId });
-    const messages = await Message.find({ room_id: roomId });
-    const room = await Room.findOne({ id: roomId });
+    const players = dbOps.players.find({ room_id: roomId });
+    const messages = dbOps.messages.find({ room_id: roomId });
+    const room = dbOps.rooms.findOne({ id: roomId });
     
     ws.send(JSON.stringify({
       type: "ROOM_STATE",
       payload: { players, messages, room }
     }));
+  }
+
+  async function broadcastRoomState(roomId: string) {
+    const players = dbOps.players.find({ room_id: roomId });
+    const messages = dbOps.messages.find({ room_id: roomId });
+    const room = dbOps.rooms.findOne({ id: roomId });
+    broadcastToRoom(roomId, {
+      type: "ROOM_STATE",
+      payload: { players, messages, room }
+    });
   }
 
   // Vite middleware for development

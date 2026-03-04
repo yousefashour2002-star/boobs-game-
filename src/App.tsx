@@ -4,7 +4,7 @@ import {
   Users, MessageSquare, Shield, Send, User, 
   Settings, LogOut, Plus, LogIn, Crown, 
   Lock, Eye, EyeOff, AlertCircle, CheckCircle2,
-  Trophy, MessageCircle, UserX, UserCheck
+  Trophy, MessageCircle, UserX, UserCheck, Copy
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { Player, Message, Room, GameState } from './types';
@@ -48,10 +48,13 @@ export default function App() {
     };
   }, []);
 
+  const [copied, setCopied] = useState(false);
+
   const copyRoomCode = () => {
     if (gameState.room?.id) {
       navigator.clipboard.writeText(gameState.room.id);
-      alert('Room code copied to clipboard!');
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     }
   };
 
@@ -164,6 +167,12 @@ export default function App() {
 
   const sendMessage = () => {
     if (!messageInput.trim()) return;
+    
+    if (activeTab === 'private' && !selectedPlayerId) {
+      alert('Please select a player to send a private message.');
+      return;
+    }
+
     const isPrivate = activeTab === 'private' && selectedPlayerId;
     ws.current?.send(JSON.stringify({
       type: 'SEND_MESSAGE',
@@ -294,7 +303,8 @@ export default function App() {
   const currentRound = gameState.room?.round_number || 1;
   
   const publicMessages = gameState.messages.filter(m => {
-    if (m.receiver_id || !['text', 'question', 'answer'].includes(m.type)) return false;
+    if (m.receiver_id) return false;
+    if (!['text', 'question', 'answer'].includes(m.type)) return false;
     if (me?.is_host) return true;
     return m.round_number === currentRound;
   });
@@ -311,7 +321,11 @@ export default function App() {
       .map(m => m.sender_id === playerId ? m.receiver_id : m.sender_id)
   );
 
-  const monitorMessages = gameState.messages.filter(m => m.receiver_id && m.isMonitor);
+  const monitorMessages = gameState.messages.filter(m => 
+    m.receiver_id && 
+    m.receiver_id !== gameState.room?.host_id && 
+    m.sender_id !== gameState.room?.host_id
+  );
   const playerAnswers = gameState.messages.filter(m => m.type === 'answer');
 
   return (
@@ -321,13 +335,25 @@ export default function App() {
         <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
           <div>
             <h2 className="text-xl font-bold italic tracking-tighter">THE CIRCLE</h2>
-            <button 
-              onClick={copyRoomCode}
-              className="text-xs text-zinc-500 font-mono hover:text-indigo-400 transition-colors flex items-center"
-            >
-              ROOM: {gameState.room?.id}
-              <CheckCircle2 size={10} className="ml-1" />
-            </button>
+            <div className="flex items-center space-x-2">
+              <span className="text-xs text-zinc-500 font-mono uppercase">ROOM: {gameState.room?.id}</span>
+              <button 
+                onClick={copyRoomCode}
+                className="p-1 hover:bg-zinc-800 rounded text-zinc-500 hover:text-indigo-400 transition-all relative"
+                title="Copy Room Code"
+              >
+                {copied ? <CheckCircle2 size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                {copied && (
+                  <motion.span 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="absolute -top-6 left-1/2 -translate-x-1/2 text-[10px] bg-emerald-500 text-white px-1.5 py-0.5 rounded font-bold"
+                  >
+                    COPIED
+                  </motion.span>
+                )}
+              </button>
+            </div>
           </div>
           {me?.is_host ? <Shield className="text-indigo-500" size={20} /> : <User className="text-zinc-500" size={20} />}
         </div>
@@ -382,25 +408,34 @@ export default function App() {
             <div className="space-y-2">
               <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest px-2">Recent Chats</p>
               {gameState.players
-                .filter(p => p.id !== playerId && (messagedPlayerIds.has(p.id) || selectedPlayerId === p.id))
+                .filter(p => p.id !== playerId)
                 .map(p => (
                 <button
                   key={p.id}
                   onClick={() => setSelectedPlayerId(p.id)}
                   className={cn(
                     "w-full flex items-center p-2 rounded-xl transition-all",
-                    selectedPlayerId === p.id ? "bg-zinc-800" : "hover:bg-zinc-800/50"
+                    selectedPlayerId === p.id ? "bg-indigo-600/20 border border-indigo-500/30" : "hover:bg-zinc-800/50 border border-transparent"
                   )}
                 >
-                  <img src={p.avatar_url || ''} className="w-8 h-8 rounded-full mr-3 border border-zinc-700 object-cover" referrerPolicy="no-referrer" />
+                  <div className="relative">
+                    <img src={p.avatar_url || ''} className="w-10 h-10 rounded-full mr-3 border border-zinc-700 object-cover" referrerPolicy="no-referrer" />
+                    {messagedPlayerIds.has(p.id) && (
+                      <div className="absolute -top-1 -right-1 w-3 h-3 bg-indigo-500 rounded-full border-2 border-zinc-900" />
+                    )}
+                  </div>
                   <div className="text-left overflow-hidden">
-                    <p className="text-sm font-semibold truncate">{p.fake_name}</p>
-                    {p.is_blocked ? <span className="text-[10px] text-red-500 font-bold uppercase">Blocked</span> : <span className="text-[10px] text-green-500 font-bold uppercase">Active</span>}
+                    <p className="text-sm font-bold truncate">{p.fake_name}</p>
+                    {p.is_blocked ? (
+                      <span className="text-[10px] text-red-500 font-bold uppercase">Blocked</span>
+                    ) : (
+                      <span className="text-[10px] text-zinc-500 font-medium">{p.personality}</span>
+                    )}
                   </div>
                 </button>
               ))}
-              {messagedPlayerIds.size === 0 && !selectedPlayerId && (
-                <p className="text-[10px] text-zinc-600 italic px-2">No active chats. Go to Players to start one.</p>
+              {gameState.players.filter(p => p.id !== playerId).length === 0 && (
+                <p className="text-[10px] text-zinc-600 italic px-2">Waiting for players to join...</p>
               )}
             </div>
           )}
@@ -480,6 +515,16 @@ export default function App() {
                   canVote={gameState.room?.status === 'voting' && !me?.is_blocked && p.id !== playerId}
                 />
               ))}
+            </div>
+          ) : activeTab === 'private' && !selectedPlayerId ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4">
+              <div className="w-20 h-20 bg-zinc-800 rounded-full flex items-center justify-center text-zinc-500">
+                <MessageCircle size={40} />
+              </div>
+              <div className="max-w-xs">
+                <h3 className="text-xl font-bold">Private Messages</h3>
+                <p className="text-zinc-500 mt-2">Select a player from the sidebar to start a private conversation.</p>
+              </div>
             </div>
           ) : activeTab === 'host' ? (
             <HostPanel 
@@ -852,45 +897,65 @@ function PlayerCard({ player, isMe, onView, onMessage, onVote, canVote }: Player
   return (
     <motion.div 
       whileHover={{ y: -4 }}
-      className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden group"
+      className={cn(
+        "bg-zinc-900 border rounded-2xl overflow-hidden group transition-all",
+        player.is_blocked ? "border-red-900/50 opacity-80" : "border-zinc-800 hover:border-indigo-500/50"
+      )}
     >
       <div className="p-6 flex flex-col items-center text-center space-y-4">
         <div className="relative">
           <img 
             src={player.avatar_url || ''} 
-            className={cn("w-24 h-24 rounded-2xl border-2 border-zinc-800 group-hover:border-indigo-500 transition-all", player.is_blocked && "grayscale opacity-50")} 
+            className={cn(
+              "w-24 h-24 rounded-2xl border-2 transition-all object-cover", 
+              player.is_blocked ? "border-red-600 grayscale opacity-50" : "border-zinc-800 group-hover:border-indigo-500"
+            )} 
             referrerPolicy="no-referrer"
           />
           {player.is_blocked && (
             <div className="absolute inset-0 flex items-center justify-center">
-              <div className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded rotate-[-15deg] shadow-lg">BLOCKED</div>
+              <div className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded rotate-[-15deg] shadow-lg border border-red-400">BLOCKED</div>
+            </div>
+          )}
+          {player.is_host === 1 && (
+            <div className="absolute -top-2 -right-2 bg-amber-500 text-black p-1 rounded-full shadow-lg border-2 border-zinc-900">
+              <Crown size={14} />
             </div>
           )}
         </div>
         <div>
-          <h4 className="font-bold text-lg">{player.fake_name} {isMe && <span className="text-xs text-zinc-500">(You)</span>}</h4>
+          <div className="flex items-center justify-center space-x-1">
+            <h4 className="font-bold text-lg">{player.fake_name}</h4>
+            {isMe && <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-tighter">(You)</span>}
+          </div>
           <p className="text-xs text-zinc-500">{player.personality}</p>
+          {player.is_blocked === 1 && (
+            <span className="text-[10px] text-red-500 font-bold uppercase tracking-widest mt-1 block bg-red-500/10 py-0.5 rounded">Blocked Player</span>
+          )}
+          {player.is_host === 1 && <span className="text-[10px] text-amber-500 font-bold uppercase tracking-widest mt-1 block">Room Host</span>}
         </div>
         <div className="flex w-full gap-2">
           <button 
             onClick={onView}
-            className="flex-1 p-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl transition-all"
+            className="flex-1 p-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl transition-all flex items-center justify-center text-zinc-400 hover:text-white"
+            title="View Profile"
           >
-            <User size={18} className="mx-auto" />
+            <User size={18} />
           </button>
           {!isMe && (
             <button 
               onClick={onMessage}
-              className="flex-1 p-2 bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 rounded-xl transition-all"
+              className="flex-1 p-2 bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 rounded-xl transition-all flex items-center justify-center"
+              title="Send Message"
             >
-              <MessageSquare size={18} className="mx-auto" />
+              <MessageSquare size={18} />
             </button>
           )}
         </div>
         {canVote && (
           <button 
             onClick={onVote}
-            className="w-full py-2 bg-red-600 hover:bg-red-500 rounded-xl font-bold text-sm transition-all"
+            className="w-full py-2 bg-red-600 hover:bg-red-500 rounded-xl font-bold text-sm transition-all shadow-lg shadow-red-500/20"
           >
             Vote to Block
           </button>
@@ -1011,11 +1076,14 @@ function HostPanel({
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800">
-              {players.filter(p => !p.is_host).map(p => (
+              {players.map(p => (
                 <tr key={p.id} className="hover:bg-zinc-800/20 transition-all">
                   <td className="px-6 py-4 flex items-center space-x-3">
                     <img src={p.avatar_url || ''} className="w-10 h-10 rounded-full object-cover border border-zinc-700" referrerPolicy="no-referrer" />
-                    <span className="font-bold">{p.fake_name}</span>
+                    <div className="flex flex-col">
+                      <span className="font-bold">{p.fake_name}</span>
+                      {p.is_host === 1 && <span className="text-[8px] text-amber-500 font-bold uppercase">Host</span>}
+                    </div>
                   </td>
                   <td className="px-6 py-4 text-zinc-400 font-mono text-xs">{p.real_name || 'Unknown'}</td>
                   <td className="px-6 py-4 font-bold text-indigo-400">{p.points}</td>
@@ -1028,12 +1096,14 @@ function HostPanel({
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex space-x-2">
-                      <button 
-                        onClick={() => onToggleBlock(p.id, p.is_blocked)}
-                        className={cn("p-2 rounded-lg transition-all", p.is_blocked ? "bg-green-600/20 text-green-500" : "bg-red-600/20 text-red-500")}
-                      >
-                        {p.is_blocked ? <UserCheck size={16} /> : <UserX size={16} />}
-                      </button>
+                      {!p.is_host && (
+                        <button 
+                          onClick={() => onToggleBlock(p.id, p.is_blocked)}
+                          className={cn("p-2 rounded-lg transition-all", p.is_blocked ? "bg-green-600/20 text-green-500" : "bg-red-600/20 text-red-500")}
+                        >
+                          {p.is_blocked ? <UserCheck size={16} /> : <UserX size={16} />}
+                        </button>
+                      )}
                       <button 
                         onClick={() => onAwardPoints(p.id, 10)}
                         className="p-2 bg-indigo-600/20 text-indigo-500 rounded-lg hover:bg-indigo-600/30 transition-all"
