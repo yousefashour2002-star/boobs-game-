@@ -393,6 +393,14 @@ async function startServer() {
           break;
         }
 
+        case "LEAVE_ROOM": {
+          if (!clientInfo) return;
+          dbOps.players.deleteMany({ id: clientInfo.playerId });
+          clients.delete(clientInfo.playerId);
+          broadcastRoomState(clientInfo.roomId);
+          break;
+        }
+
         case "UPDATE_POINTS": {
           if (!clientInfo) return;
           const { targetId, points } = payload;
