@@ -19,6 +19,7 @@ export interface Message {
   receiver_id: string | null;
   content: string;
   type: 'text' | 'question' | 'answer';
+  reply_to_id?: string | null;
   created_at: string;
   round_number: number;
   isMonitor?: boolean;

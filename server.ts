@@ -54,6 +54,7 @@ db.exec(`
     receiver_id TEXT,
     content TEXT,
     type TEXT DEFAULT 'text',
+    reply_to_id TEXT,
     round_number INTEGER DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
@@ -280,7 +281,7 @@ async function startServer() {
 
         case "SEND_MESSAGE": {
           if (!clientInfo) return;
-          const { content, receiverId, msgType } = payload;
+          const { content, receiverId, msgType, replyToId } = payload;
           
           const player = dbOps.players.findOne({ id: clientInfo.playerId });
           if (player?.is_blocked && (msgType === 'text' || msgType === 'answer')) return;
@@ -297,6 +298,7 @@ async function startServer() {
             receiver_id: receiverId || null,
             content,
             type: msgType || 'text',
+            reply_to_id: replyToId || null,
             round_number: room.round_number,
             created_at: createdAt
           });
@@ -307,6 +309,7 @@ async function startServer() {
             receiver_id: receiverId || null,
             content,
             type: msgType || 'text',
+            reply_to_id: replyToId || null,
             round_number: room.round_number,
             created_at: createdAt
           };

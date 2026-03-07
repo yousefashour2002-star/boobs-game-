@@ -35,6 +35,8 @@ export default function App() {
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState('');
   const [showProfileModal, setShowProfileModal] = useState<Player | null>(null);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [showMentionList, setShowMentionList] = useState(false);
   
   const ws = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -254,10 +256,12 @@ export default function App() {
       payload: {
         content: messageInput,
         receiverId: isPrivate ? selectedPlayerId : null,
-        msgType: 'text'
+        msgType: 'text',
+        replyToId: replyingTo?.id || null
       }
     }));
     setMessageInput('');
+    setReplyingTo(null);
   };
 
   const castVote = (targetId: string) => {
@@ -688,6 +692,7 @@ export default function App() {
               players={gameState.players}
               messages={monitorMessages}
               answers={playerAnswers}
+              allMessages={gameState.messages}
               onToggleBlock={toggleBlock}
               onAwardPoints={awardPoints}
               onSendQuestion={(content) => {
@@ -707,29 +712,37 @@ export default function App() {
           ) : (
             <>
               <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
-                {(activeTab === 'public' ? publicMessages : privateMessages).map((m) => (
-                  <MessageBubble 
-                    key={m.id} 
-                    message={m} 
-                    isMe={m.sender_id === playerId}
-                    sender={gameState.players.find(p => p.id === m.sender_id)}
-                    isBlocked={me?.is_blocked === 1}
-                    onAvatarClick={() => {
-                      const sender = gameState.players.find(p => p.id === m.sender_id);
-                      if (sender) setShowProfileModal(sender);
-                    }}
-                    onAnswer={(answer) => {
-                      ws.current?.send(JSON.stringify({
-                        type: 'SEND_MESSAGE',
-                        payload: {
-                          content: answer,
-                          receiverId: gameState.room?.host_id,
-                          msgType: 'answer'
-                        }
-                      }));
-                    }}
-                  />
-                ))}
+                {(activeTab === 'public' ? publicMessages : privateMessages).map((m) => {
+                  const repliedTo = m.reply_to_id ? gameState.messages.find(msg => msg.id === m.reply_to_id) : null;
+                  const repliedToSender = repliedTo ? gameState.players.find(p => p.id === repliedTo.sender_id) : null;
+                  return (
+                    <MessageBubble 
+                      key={m.id} 
+                      message={m} 
+                      isMe={m.sender_id === playerId}
+                      sender={gameState.players.find(p => p.id === m.sender_id)}
+                      isBlocked={me?.is_blocked === 1}
+                      repliedToMessage={repliedTo}
+                      repliedToSender={repliedToSender}
+                      onReply={() => setReplyingTo(m)}
+                      onAvatarClick={() => {
+                        const sender = gameState.players.find(p => p.id === m.sender_id);
+                        if (sender) setShowProfileModal(sender);
+                      }}
+                      onAnswer={(answer) => {
+                        ws.current?.send(JSON.stringify({
+                          type: 'SEND_MESSAGE',
+                          payload: {
+                            content: answer,
+                            receiverId: gameState.room?.host_id,
+                            msgType: 'answer',
+                            replyToId: m.id
+                          }
+                        }));
+                      }}
+                    />
+                  );
+                })}
               </div>
 
               {/* Input Area */}
@@ -740,21 +753,80 @@ export default function App() {
                     <span className="font-semibold text-center">أنت محظور ولا يمكنك إرسال الرسائل.</span>
                   </div>
                 ) : (
-                  <div className="relative">
-                    <input 
-                      type="text"
-                      value={messageInput}
-                      onChange={(e) => setMessageInput(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                      placeholder={activeTab === 'public' ? "أرسل رسالة للجميع..." : "أرسل رسالة خاصة..."}
-                      className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl px-4 md:px-6 py-3 md:py-4 pl-14 md:pl-16 focus:outline-none focus:border-indigo-500 transition-all text-sm md:text-base text-right"
-                    />
-                    <button 
-                      onClick={sendMessage}
-                      className="absolute left-2 md:left-3 top-1/2 -translate-y-1/2 p-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-all"
-                    >
-                      <Send size={18} />
-                    </button>
+                  <div className="space-y-3">
+                    {replyingTo && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="p-2 md:p-3 bg-zinc-800/50 border border-zinc-700 rounded-xl flex items-center justify-between text-xs"
+                      >
+                        <div className="flex items-center space-x-2 space-x-reverse">
+                          <div className="w-1 h-4 bg-indigo-500 rounded-full" />
+                          <span className="text-zinc-400 font-bold">الرد على {gameState.players.find(p => p.id === replyingTo.sender_id)?.fake_name}:</span>
+                          <span className="text-zinc-300 truncate max-w-[150px] md:max-w-[300px]">{replyingTo.content}</span>
+                        </div>
+                        <button onClick={() => setReplyingTo(null)} className="p-1 hover:bg-zinc-700 rounded-full text-zinc-500 transition-all">
+                          <X size={14} />
+                        </button>
+                      </motion.div>
+                    )}
+                    <div className="relative">
+                      {showMentionList && (
+                        <motion.div 
+                          initial={{ opacity: 0, scale: 0.95 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className="absolute bottom-full mb-3 right-0 w-56 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden z-50"
+                        >
+                          <div className="p-3 border-b border-zinc-800 bg-zinc-800/50">
+                            <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">منشن لاعب</p>
+                          </div>
+                          <div className="max-h-60 overflow-y-auto">
+                            {gameState.players.map(p => (
+                              <button 
+                                key={p.id}
+                                onClick={() => {
+                                  setMessageInput(prev => prev + `@${p.fake_name} `);
+                                  setShowMentionList(false);
+                                }}
+                                className="w-full flex items-center p-3 hover:bg-zinc-800 transition-all text-right border-b border-zinc-800/50 last:border-0"
+                              >
+                                <img src={p.avatar_url || ''} className="w-8 h-8 rounded-full ml-3 border border-zinc-700 object-cover" referrerPolicy="no-referrer" />
+                                <div className="flex flex-col text-right">
+                                  <span className="text-sm font-bold">{p.fake_name}</span>
+                                  <span className="text-[10px] text-zinc-500">{p.personality}</span>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </motion.div>
+                      )}
+                      <input 
+                        type="text"
+                        value={messageInput}
+                        onChange={(e) => setMessageInput(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                        placeholder={activeTab === 'public' ? "أرسل رسالة للجميع..." : "أرسل رسالة خاصة..."}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl px-4 md:px-6 py-3 md:py-4 pl-24 md:pl-28 focus:outline-none focus:border-indigo-500 transition-all text-sm md:text-base text-right"
+                      />
+                      <div className="absolute left-2 md:left-3 top-1/2 -translate-y-1/2 flex items-center space-x-1 md:space-x-2 space-x-reverse">
+                        <button 
+                          onClick={() => setShowMentionList(!showMentionList)}
+                          className={cn(
+                            "p-2 rounded-xl transition-all",
+                            showMentionList ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                          )}
+                          title="منشن"
+                        >
+                          <Users size={18} />
+                        </button>
+                        <button 
+                          onClick={sendMessage}
+                          className="p-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-all shadow-lg shadow-indigo-500/20"
+                        >
+                          <Send size={18} />
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -971,9 +1043,12 @@ interface MessageBubbleProps {
   sender?: Player;
   onAvatarClick?: () => void;
   onAnswer?: (answer: string) => void;
+  onReply?: () => void;
+  repliedToMessage?: Message | null;
+  repliedToSender?: Player | null;
 }
 
-function MessageBubble({ message, isMe, sender, onAvatarClick, onAnswer, isBlocked }: MessageBubbleProps & { isBlocked?: boolean }) {
+function MessageBubble({ message, isMe, sender, onAvatarClick, onAnswer, isBlocked, onReply, repliedToMessage, repliedToSender }: MessageBubbleProps & { isBlocked?: boolean }) {
   const [answer, setAnswer] = useState('');
   const [submitted, setSubmitted] = useState(false);
 
@@ -1027,25 +1102,50 @@ function MessageBubble({ message, isMe, sender, onAvatarClick, onAnswer, isBlock
   }
 
   return (
-    <div className={cn("flex flex-col", isMe ? "items-end" : "items-start")} dir="rtl">
+    <div className={cn("flex flex-col group", isMe ? "items-end" : "items-start")} dir="rtl">
       <div className={cn("flex items-end space-x-2 space-x-reverse", isMe && "flex-row-reverse space-x-reverse")}>
         <button onClick={onAvatarClick} className="flex-shrink-0">
           <img src={sender?.avatar_url || ''} className="w-8 h-8 md:w-10 md:h-10 rounded-full mb-1 hover:ring-2 hover:ring-indigo-500 transition-all object-cover border border-zinc-800" referrerPolicy="no-referrer" />
         </button>
-        <div className={cn(
-          "max-w-[90%] md:max-w-md px-3 md:px-4 py-2 md:py-3 rounded-2xl text-xs md:text-sm shadow-sm",
-          isMe ? "bg-indigo-600 text-white rounded-bl-none" : "bg-zinc-800 text-zinc-100 rounded-br-none",
-          message.type === 'answer' && "bg-emerald-600/20 border border-emerald-500/30 text-emerald-200"
-        )}>
-          {!isMe && (
-            <div className="flex items-center space-x-2 space-x-reverse mb-1">
-              <p className="text-[10px] font-bold text-indigo-400">{sender?.fake_name}</p>
-              {sender?.is_blocked === 1 && (
-                <span className="text-[8px] bg-red-500/20 text-red-500 px-1 rounded font-bold uppercase">محظور</span>
-              )}
+        <div className="flex flex-col max-w-[90%] md:max-w-md">
+          {repliedToMessage && (
+            <div className={cn(
+              "mb-[-12px] pb-3 pt-2 px-3 rounded-t-2xl text-[10px] md:text-xs bg-zinc-800/50 border-x border-t border-zinc-700/50 text-zinc-400 flex items-center space-x-2 space-x-reverse opacity-80",
+              isMe ? "mr-4" : "ml-4"
+            )}>
+              <div className="w-1 h-4 bg-indigo-500 rounded-full" />
+              <span className="font-bold text-indigo-400">{repliedToSender?.fake_name}:</span>
+              <span className="truncate">{repliedToMessage.content}</span>
             </div>
           )}
-          {message.content}
+          <div className={cn(
+            "relative px-3 md:px-4 py-2 md:py-3 rounded-2xl text-xs md:text-sm shadow-sm",
+            isMe ? "bg-indigo-600 text-white rounded-bl-none" : "bg-zinc-800 text-zinc-100 rounded-br-none",
+            message.type === 'answer' && "bg-emerald-600/20 border border-emerald-500/30 text-emerald-200",
+            repliedToMessage && "rounded-t-none"
+          )}>
+            {!isMe && (
+              <div className="flex items-center space-x-2 space-x-reverse mb-1">
+                <p className="text-[10px] font-bold text-indigo-400">{sender?.fake_name}</p>
+                {sender?.is_blocked === 1 && (
+                  <span className="text-[8px] bg-red-500/20 text-red-500 px-1 rounded font-bold uppercase">محظور</span>
+                )}
+              </div>
+            )}
+            {message.content}
+            
+            {/* Reply Button on Hover */}
+            <button 
+              onClick={onReply}
+              className={cn(
+                "absolute top-1/2 -translate-y-1/2 p-1.5 bg-zinc-800 border border-zinc-700 rounded-full text-zinc-400 hover:text-white hover:bg-zinc-700 transition-all opacity-0 group-hover:opacity-100 shadow-xl z-10",
+                isMe ? "right-full mr-2" : "left-full ml-2"
+              )}
+              title="رد"
+            >
+              <Send size={12} className="-rotate-45" />
+            </button>
+          </div>
         </div>
       </div>
       <span className="text-[10px] text-zinc-600 mt-1 px-2">
@@ -1141,12 +1241,12 @@ function PlayerCard({ player, isMe, onView, onMessage, onVote, canVote }: Player
 }
 
 function HostPanel({ 
-  players, messages, answers, onToggleBlock, onAwardPoints, onSendQuestion, onStartVoting, onEndVoting, onSetTimer, onStopTimer, roomStatus, timerLeft, timerActive
+  players, messages, answers, onToggleBlock, onAwardPoints, onSendQuestion, onStartVoting, onEndVoting, onSetTimer, onStopTimer, roomStatus, timerLeft, timerActive, allMessages
 }: { 
   players: Player[], messages: Message[], answers: Message[], onToggleBlock: (id: string, s: number) => void, 
   onAwardPoints: (id: string, p: number) => void, onSendQuestion: (c: string) => void,
   onStartVoting: () => void, onEndVoting: () => void, onSetTimer: (s: number) => void, onStopTimer: () => void,
-  roomStatus: string, timerLeft: number, timerActive: boolean
+  roomStatus: string, timerLeft: number, timerActive: boolean, allMessages: Message[]
 }) {
   const [questionInput, setQuestionInput] = useState('');
   const [timerInput, setTimerInput] = useState('300');
@@ -1346,17 +1446,23 @@ function HostPanel({
             {answers.length === 0 ? (
               <p className="text-center text-zinc-600 text-sm italic py-12">لا توجد إجابات مستلمة بعد...</p>
             ) : (
-              answers.map(m => (
-                <div key={m.id} className="text-xs bg-emerald-600/10 p-3 rounded-xl border border-emerald-500/20 text-right">
-                  <div className="flex justify-between mb-1">
-                    <span className="font-bold text-emerald-400">
-                      {players.find(p => p.id === m.sender_id)?.fake_name}
-                    </span>
-                    <span className="text-zinc-600">{new Date(m.created_at).toLocaleTimeString()}</span>
+              answers.map(m => {
+                const question = allMessages.find(q => q.id === m.reply_to_id);
+                return (
+                  <div key={m.id} className="text-xs bg-emerald-600/10 p-3 rounded-xl border border-emerald-500/20 text-right">
+                    <div className="flex justify-between mb-1">
+                      <span className="font-bold text-emerald-400">
+                        {players.find(p => p.id === m.sender_id)?.fake_name}
+                      </span>
+                      <span className="text-zinc-600">{new Date(m.created_at).toLocaleTimeString()}</span>
+                    </div>
+                    {question && (
+                      <p className="text-[10px] text-zinc-500 mb-1 border-r-2 border-zinc-700 pr-2 italic">السؤال: {question.content}</p>
+                    )}
+                    <p className="text-zinc-300"><span className="font-bold">الإجابة:</span> {m.content}</p>
                   </div>
-                  <p className="text-zinc-300">{m.content}</p>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
