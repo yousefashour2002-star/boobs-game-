@@ -283,7 +283,7 @@ async function startServer() {
           const { content, receiverId, msgType } = payload;
           
           const player = dbOps.players.findOne({ id: clientInfo.playerId });
-          if (player?.is_blocked && msgType === 'text') return;
+          if (player?.is_blocked && (msgType === 'text' || msgType === 'answer')) return;
 
           const room = dbOps.rooms.findOne({ id: clientInfo.roomId });
           if (!room) return;

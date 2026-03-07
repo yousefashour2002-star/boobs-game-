@@ -40,8 +40,30 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const savedRoomId = localStorage.getItem('roomId');
+    const savedRealName = localStorage.getItem('realName');
+    const savedIsHost = localStorage.getItem('isHost') === 'true';
+    
+    if (savedRoomId && savedRealName) {
+      setRoomId(savedRoomId);
+      setRealName(savedRealName);
+      setIsHost(savedIsHost);
+      // We will connect in a separate useEffect once states are set
+    }
+  }, []);
+
+  useEffect(() => {
+    if (roomId && realName && !ws.current) {
+      connect(roomId, playerId, realName, isHost);
+    }
+  }, [roomId, realName, isHost]);
+
+  useEffect(() => {
     localStorage.setItem('playerId', playerId);
-  }, [playerId]);
+    if (roomId) localStorage.setItem('roomId', roomId);
+    if (realName) localStorage.setItem('realName', realName);
+    localStorage.setItem('isHost', isHost.toString());
+  }, [playerId, roomId, realName, isHost]);
 
   useEffect(() => {
     return () => {
@@ -50,69 +72,6 @@ export default function App() {
   }, []);
 
   const [copied, setCopied] = useState(false);
-
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-
-  const copyRoomCode = () => {
-    if (gameState.room?.id) {
-      const text = gameState.room.id;
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        }).catch(() => {
-          // Fallback if clipboard API fails
-          fallbackCopyText(text);
-        });
-      } else {
-        fallbackCopyText(text);
-      }
-    }
-  };
-
-  const fallbackCopyText = (text: string) => {
-    const textArea = document.createElement("textarea");
-    textArea.value = text;
-    
-    // Ensure it's not visible but part of the DOM
-    textArea.style.position = "fixed";
-    textArea.style.left = "-9999px";
-    textArea.style.top = "0";
-    document.body.appendChild(textArea);
-    
-    textArea.focus();
-    textArea.select();
-    
-    try {
-      document.execCommand('copy');
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Fallback copy failed', err);
-    }
-    
-    document.body.removeChild(textArea);
-  };
-
-
-  const connect = (rId: string, pId: string, name: string, host: boolean) => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(`${protocol}//${window.location.host}`);
-    
-    socket.onopen = () => {
-      socket.send(JSON.stringify({
-        type: 'JOIN_ROOM',
-        payload: { roomId: rId, playerId: pId, realName: name, isHost: host }
-      }));
-    };
-
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      handleWsMessage(data);
-    };
-
-    ws.current = socket;
-  };
 
   const handleWsMessage = (msg: any) => {
     const { type, payload } = msg;
@@ -174,6 +133,69 @@ export default function App() {
         break;
     }
   };
+
+  const connect = (rId: string, pId: string, name: string, host: boolean) => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(`${protocol}//${window.location.host}`);
+    
+    socket.onopen = () => {
+      socket.send(JSON.stringify({
+        type: 'JOIN_ROOM',
+        payload: { roomId: rId, playerId: pId, realName: name, isHost: host }
+      }));
+    };
+
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      handleWsMessage(data);
+    };
+
+    ws.current = socket;
+  };
+
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  const copyRoomCode = () => {
+    if (gameState.room?.id) {
+      const text = gameState.room.id;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        }).catch(() => {
+          // Fallback if clipboard API fails
+          fallbackCopyText(text);
+        });
+      } else {
+        fallbackCopyText(text);
+      }
+    }
+  };
+
+  const fallbackCopyText = (text: string) => {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    
+    // Ensure it's not visible but part of the DOM
+    textArea.style.position = "fixed";
+    textArea.style.left = "-9999px";
+    textArea.style.top = "0";
+    document.body.appendChild(textArea);
+    
+    textArea.focus();
+    textArea.select();
+    
+    try {
+      document.execCommand('copy');
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Fallback copy failed', err);
+    }
+    
+    document.body.removeChild(textArea);
+  };
+
 
   const createRoom = async () => {
     if (!realName) return alert('Please enter your real name');
@@ -603,7 +625,7 @@ export default function App() {
         {/* Chat / Content Area */}
         <div className="flex-1 overflow-hidden flex flex-col">
           {activeTab === 'players' ? (
-            <div className="p-4 md:p-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6 overflow-y-auto">
+            <div className="p-4 md:p-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6 overflow-y-auto">
               {gameState.players.map(p => (
                 <PlayerCard 
                   key={p.id} 
@@ -659,6 +681,7 @@ export default function App() {
                     message={m} 
                     isMe={m.sender_id === playerId}
                     sender={gameState.players.find(p => p.id === m.sender_id)}
+                    isBlocked={me?.is_blocked === 1}
                     onAvatarClick={() => {
                       const sender = gameState.players.find(p => p.id === m.sender_id);
                       if (sender) setShowProfileModal(sender);
@@ -918,20 +941,25 @@ interface MessageBubbleProps {
   onAnswer?: (answer: string) => void;
 }
 
-function MessageBubble({ message, isMe, sender, onAvatarClick, onAnswer }: MessageBubbleProps) {
+function MessageBubble({ message, isMe, sender, onAvatarClick, onAnswer, isBlocked }: MessageBubbleProps & { isBlocked?: boolean }) {
   const [answer, setAnswer] = useState('');
   const [submitted, setSubmitted] = useState(false);
 
   if (message.type === 'question' && !isMe) {
     return (
-      <div className="flex flex-col items-start w-full max-w-[90%] md:max-w-md">
+      <div className="flex flex-col items-start w-full max-w-[95%] md:max-w-md">
         <div className="bg-amber-600/10 border border-amber-500/30 rounded-2xl p-4 md:p-6 w-full space-y-3 md:space-y-4 shadow-lg">
           <div className="flex items-center space-x-2 text-amber-500">
             <Shield size={14} />
             <span className="text-[10px] font-bold uppercase tracking-widest">Host Question</span>
           </div>
           <p className="text-base md:text-lg font-medium text-zinc-100">{message.content}</p>
-          {!submitted ? (
+          {isBlocked ? (
+            <div className="bg-red-500/10 border border-red-500/20 p-3 rounded-xl text-red-500 text-xs font-bold flex items-center">
+              <EyeOff size={14} className="mr-2" />
+              You are blocked and cannot answer questions.
+            </div>
+          ) : !submitted ? (
             <div className="space-y-3">
               <input 
                 type="text" 
@@ -973,11 +1001,18 @@ function MessageBubble({ message, isMe, sender, onAvatarClick, onAnswer }: Messa
           <img src={sender?.avatar_url || ''} className="w-8 h-8 md:w-10 md:h-10 rounded-full mb-1 hover:ring-2 hover:ring-indigo-500 transition-all object-cover border border-zinc-800" referrerPolicy="no-referrer" />
         </button>
         <div className={cn(
-          "max-w-[85%] md:max-w-md px-3 md:px-4 py-2 md:py-3 rounded-2xl text-xs md:text-sm shadow-sm",
+          "max-w-[90%] md:max-w-md px-3 md:px-4 py-2 md:py-3 rounded-2xl text-xs md:text-sm shadow-sm",
           isMe ? "bg-indigo-600 text-white rounded-br-none" : "bg-zinc-800 text-zinc-100 rounded-bl-none",
           message.type === 'answer' && "bg-emerald-600/20 border border-emerald-500/30 text-emerald-200"
         )}>
-          {!isMe && <p className="text-[10px] font-bold text-indigo-400 mb-1">{sender?.fake_name}</p>}
+          {!isMe && (
+            <div className="flex items-center space-x-2 mb-1">
+              <p className="text-[10px] font-bold text-indigo-400">{sender?.fake_name}</p>
+              {sender?.is_blocked === 1 && (
+                <span className="text-[8px] bg-red-500/20 text-red-500 px-1 rounded font-bold uppercase">Blocked</span>
+              )}
+            </div>
+          )}
           {message.content}
         </div>
       </div>
@@ -1007,36 +1042,36 @@ function PlayerCard({ player, isMe, onView, onMessage, onVote, canVote }: Player
         player.is_blocked ? "border-red-900/50 opacity-80" : "border-zinc-800 hover:border-indigo-500/50"
       )}
     >
-      <div className="p-4 md:p-6 flex flex-col items-center text-center space-y-3 md:space-y-4">
+      <div className="p-3 md:p-6 flex flex-col items-center text-center space-y-2 md:space-y-4">
         <div className="relative">
           <img 
             src={player.avatar_url || ''} 
             className={cn(
-              "w-20 h-20 md:w-24 md:h-24 rounded-2xl border-2 transition-all object-cover", 
+              "w-16 h-16 md:w-24 md:h-24 rounded-2xl border-2 transition-all object-cover", 
               player.is_blocked ? "border-red-600 grayscale opacity-50" : "border-zinc-800 group-hover:border-indigo-500"
             )} 
             referrerPolicy="no-referrer"
           />
           {player.is_blocked && (
             <div className="absolute inset-0 flex items-center justify-center">
-              <div className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded rotate-[-15deg] shadow-lg border border-red-400">BLOCKED</div>
+              <div className="bg-red-600 text-white text-[8px] md:text-[10px] font-bold px-1.5 md:px-2 py-0.5 rounded rotate-[-15deg] shadow-lg border border-red-400">BLOCKED</div>
             </div>
           )}
           {player.is_host === 1 && (
-            <div className="absolute -top-2 -right-2 bg-amber-500 text-black p-1 rounded-full shadow-lg border-2 border-zinc-900">
-              <Crown size={14} />
+            <div className="absolute -top-1 -right-1 md:-top-2 md:-right-2 bg-amber-500 text-black p-0.5 md:p-1 rounded-full shadow-lg border-2 border-zinc-900">
+              <Crown size={12} className="md:w-[14px] md:h-[14px]" />
             </div>
           )}
         </div>
-        <div className="bg-indigo-600/10 px-3 py-1 rounded-full border border-indigo-500/20">
-          <span className="text-indigo-400 font-mono font-bold text-sm">{player.points || 0}</span>
+        <div className="bg-indigo-600/10 px-2 md:px-3 py-0.5 md:py-1 rounded-full border border-indigo-500/20">
+          <span className="text-indigo-400 font-mono font-bold text-xs md:text-sm">{player.points}</span>
         </div>
         <div>
           <div className="flex items-center justify-center space-x-1">
-            <h4 className="font-bold text-lg">{player.fake_name}</h4>
-            {isMe && <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-tighter">(You)</span>}
+            <h4 className="font-bold text-sm md:text-lg truncate max-w-[80px] md:max-w-none">{player.fake_name}</h4>
+            {isMe && <span className="text-[8px] md:text-[10px] text-zinc-500 font-bold uppercase tracking-tighter">(You)</span>}
           </div>
-          <p className="text-xs text-zinc-500">{player.personality}</p>
+          <p className="text-[10px] md:text-xs text-zinc-500 truncate">{player.personality}</p>
           {player.is_blocked === 1 && (
             <span className="text-[10px] text-red-500 font-bold uppercase tracking-widest mt-1 block bg-red-500/10 py-0.5 rounded">Blocked Player</span>
           )}
