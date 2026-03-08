@@ -69,6 +69,13 @@ db.exec(`
   );
 `);
 
+// Migration: ensure reply_to_id exists in messages table
+try {
+  db.exec(`ALTER TABLE messages ADD COLUMN reply_to_id TEXT;`);
+} catch (e) {
+  // Column likely already exists
+}
+
 // Helper functions for database operations
 const dbOps = {
   players: {
@@ -241,27 +248,28 @@ async function startServer() {
     let clientInfo: { roomId: string; playerId: string } | null = null;
 
     ws.on("message", async (data) => {
-      const message = JSON.parse(data.toString());
-      const { type, payload } = message;
+      try {
+        const message = JSON.parse(data.toString());
+        const { type, payload } = message;
 
-      switch (type) {
-        case "JOIN_ROOM": {
-          const { roomId, playerId, realName, isHost } = payload;
-          clientInfo = { roomId, playerId };
-          clients.set(playerId, { ws, roomId, playerId });
+        switch (type) {
+          case "JOIN_ROOM": {
+            const { roomId, playerId, realName, isHost } = payload;
+            clientInfo = { roomId, playerId };
+            clients.set(playerId, { ws, roomId, playerId });
 
-          // Check if player exists, if not create, otherwise update room_id
-          let player = dbOps.players.findOne({ id: playerId });
-          if (!player) {
-            dbOps.players.create({ id: playerId, room_id: roomId, real_name: realName, is_host: isHost ? 1 : 0 });
-          } else {
-            dbOps.players.update({ id: playerId }, { room_id: roomId, is_host: isHost ? 1 : 0, real_name: realName });
+            // Check if player exists, if not create, otherwise update room_id
+            let player = dbOps.players.findOne({ id: playerId });
+            if (!player) {
+              dbOps.players.create({ id: playerId, room_id: roomId, real_name: realName, is_host: isHost ? 1 : 0 });
+            } else {
+              dbOps.players.update({ id: playerId }, { room_id: roomId, is_host: isHost ? 1 : 0, real_name: realName });
+            }
+
+            broadcastToRoom(roomId, { type: "PLAYER_JOINED", payload: { playerId, realName } });
+            broadcastRoomState(roomId);
+            break;
           }
-
-          broadcastToRoom(roomId, { type: "PLAYER_JOINED", payload: { playerId, realName } });
-          broadcastRoomState(roomId);
-          break;
-        }
 
         case "UPDATE_PROFILE": {
           if (!clientInfo) return;
@@ -291,17 +299,22 @@ async function startServer() {
 
           const msgId = uuidv4();
           const createdAt = new Date().toISOString();
-          dbOps.messages.create({
-            id: msgId,
-            room_id: clientInfo.roomId,
-            sender_id: clientInfo.playerId,
-            receiver_id: receiverId || null,
-            content,
-            type: msgType || 'text',
-            reply_to_id: replyToId || null,
-            round_number: room.round_number,
-            created_at: createdAt
-          });
+          try {
+            dbOps.messages.create({
+              id: msgId,
+              room_id: clientInfo.roomId,
+              sender_id: clientInfo.playerId,
+              receiver_id: receiverId || null,
+              content,
+              type: msgType || 'text',
+              reply_to_id: replyToId || null,
+              round_number: room.round_number,
+              created_at: createdAt
+            });
+          } catch (dbErr) {
+            console.error("Database error creating message:", dbErr);
+            return;
+          }
 
           const msgData = {
             id: msgId,
@@ -413,6 +426,9 @@ async function startServer() {
           break;
         }
       }
+    } catch (err) {
+      console.error("WebSocket message error:", err);
+    }
     });
 
     ws.on("close", async () => {
